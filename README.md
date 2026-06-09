@@ -233,7 +233,7 @@ journalctl -u zivpanel -f
 | Role | Name |
 |------|------|
 | Original ZIVPN UDP | [Zahid Islam](https://github.com/zahidbd2) |
-| Installer & Panel | PowerMX / [autobot-sys](https://github.com/autobot-sys) |
+| Installer & Panel | Ardvak / [autobot-sys](https://github.com/autobot-sys) |
 
 ---
 
