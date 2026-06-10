@@ -414,7 +414,7 @@ tr:hover td{background:rgba(34,211,238,.03)}
     <div class="login-logo">
       <div class="big">NOOBS</div>
       <div class="sub">ZIVPN UDP PANEL</div>
-      <div style="color:var(--muted);font-size:.7rem;margin-top:6px">github.com/autobot-sys/ZIV-WEB</div>
+      <div style="color:var(--muted);font-size:.7rem;margin-top:6px">Telegram>>https://t.me/noobsvpn/ZIV-WEB</div>
     </div>
     <input type="password" id="login-pw" placeholder="Enter panel password" autocomplete="off">
     <div class="err-msg" id="login-err"></div>
