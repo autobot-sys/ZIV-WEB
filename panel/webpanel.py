@@ -663,7 +663,7 @@ HTML = r"""<!DOCTYPE html>
   <div class="menu-toggle" onclick="toggleSidebar()">☰ Menu</div>
   <div class="sidebar" id="sidebar">
     <div class="sidebar-header">
-      <h2>NOOBSZIVPN</h2>
+      <h2>NOOBS ZIVPN</h2>
       <p>UDP VPN Manager</p>
     </div>
     <div class="nav-item active" onclick="showPage('dashboard')">
