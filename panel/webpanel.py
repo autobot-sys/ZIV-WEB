@@ -650,7 +650,7 @@ HTML = r"""<!DOCTYPE html>
 <div id="loginScreen" class="login-container">
   <div class="login-card">
     <div class="login-logo">
-      <h1>ZIVPN</h1>
+      <h1>NOOBS ZIVPN</h1>
       <p>UDP Control Panel</p>
     </div>
     <input type="password" id="loginPassword" placeholder="Panel password" autocomplete="off">
@@ -663,7 +663,7 @@ HTML = r"""<!DOCTYPE html>
   <div class="menu-toggle" onclick="toggleSidebar()">☰ Menu</div>
   <div class="sidebar" id="sidebar">
     <div class="sidebar-header">
-      <h2>ZIVPN</h2>
+      <h2>NOOBSZIVPN</h2>
       <p>UDP VPN Manager</p>
     </div>
     <div class="nav-item active" onclick="showPage('dashboard')">
