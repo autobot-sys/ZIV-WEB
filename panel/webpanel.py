@@ -22,7 +22,6 @@ LOGS_CACHE   = {"data": None, "ts": 0.0}
 STATUS_CACHE_TTL = 2.0
 LOGS_CACHE_TTL   = 3.0
 
-# IP cache to avoid repeated slow socket calls
 _ip_cache = {"ip": None, "ts": 0}
 
 # ========== METADATA HELPERS ==========
@@ -56,48 +55,137 @@ def init_meta_for_user(pw, device_limit=0, data_limit_gb=0, validity_days=0):
         setup_iptables_quota(pw, data_limit_gb)
 
 def setup_iptables_quota(pw, limit_gb):
-    subprocess.run(["iptables", "-N", f"ZIV_USER_{pw}"], stderr=subprocess.DEVNULL)
+    """Create the quota chain (without attaching to INPUT yet)."""
+    chain = f"ZIV_USER_{pw}"
+    subprocess.run(["iptables", "-N", chain], stderr=subprocess.DEVNULL)
     limit_bytes = int(limit_gb * 1024**3)
-    subprocess.run(["iptables", "-A", f"ZIV_USER_{pw}", "-m", "quota", "--quota", str(limit_bytes), "-j", "RETURN"], stderr=subprocess.DEVNULL)
-    subprocess.run(["iptables", "-A", f"ZIV_USER_{pw}", "-j", "DROP"], stderr=subprocess.DEVNULL)
+    subprocess.run(["iptables", "-F", chain], stderr=subprocess.DEVNULL)
+    subprocess.run(["iptables", "-A", chain, "-m", "quota", "--quota", str(limit_bytes), "-j", "RETURN"], stderr=subprocess.DEVNULL)
+    subprocess.run(["iptables", "-A", chain, "-j", "DROP"], stderr=subprocess.DEVNULL)
 
 def delete_iptables_chain(pw):
-    subprocess.run(["iptables", "-F", f"ZIV_USER_{pw}"], stderr=subprocess.DEVNULL)
-    subprocess.run(["iptables", "-X", f"ZIV_USER_{pw}"], stderr=subprocess.DEVNULL)
+    chain = f"ZIV_USER_{pw}"
+    subprocess.run(["iptables", "-D", "INPUT", "-j", chain], stderr=subprocess.DEVNULL)
+    subprocess.run(["iptables", "-F", chain], stderr=subprocess.DEVNULL)
+    subprocess.run(["iptables", "-X", chain], stderr=subprocess.DEVNULL)
+
+def get_iptables_quota_left(pw):
+    """Return bytes left for this user's quota chain, or None if not found."""
+    chain = f"ZIV_USER_{pw}"
+    try:
+        out = subprocess.run(["iptables", "-L", chain, "-v", "-n", "-x"], capture_output=True, text=True, timeout=2).stdout
+        for line in out.splitlines():
+            if "quota" in line:
+                parts = line.split()
+                for i, p in enumerate(parts):
+                    if p == "quota" and i+1 < len(parts):
+                        return int(parts[i+1])
+    except:
+        pass
+    return None
+
+def ensure_iptables_quota_for_user(pw):
+    """
+    Ensure the quota chain exists and is attached to INPUT for all active IPs of this user.
+    This makes bandwidth tracking work even if zivmon is not running.
+    """
+    meta = load_meta()
+    data = meta.get(pw, {})
+    data_limit = data.get("data_limit_bytes", 0)
+    if data_limit == 0:
+        return  # no quota needed
+
+    chain = f"ZIV_USER_{pw}"
+    # Check if chain exists; if not, create it
+    if not chain_exists(chain):
+        setup_iptables_quota(pw, data_limit / 1024**3)
+
+    # Get active IPs for this user
+    active_ips = get_active_devices_for_user(pw)
+    port = get_listen_port()
+    for ip in active_ips:
+        # Check if an INPUT rule for this IP already points to this chain
+        rule_exists = False
+        try:
+            out = subprocess.run(["iptables", "-L", "INPUT", "-n", "--line-numbers"], capture_output=True, text=True, timeout=2).stdout
+            for line in out.splitlines():
+                if f"{ip}" in line and f"udp dpt:{port}" in line and chain in line:
+                    rule_exists = True
+                    break
+        except:
+            pass
+        if not rule_exists:
+            subprocess.run(["iptables", "-I", "INPUT", "-s", ip, "-p", "udp", "--dport", port, "-j", chain], stderr=subprocess.DEVNULL)
+
+def chain_exists(chain):
+    try:
+        out = subprocess.run(["iptables", "-L", chain], capture_output=True, text=True, timeout=2)
+        return out.returncode == 0
+    except:
+        return False
 
 def get_user_status(pw):
+    """Return device count, remaining GB, and expiry days."""
+    # Ensure quota is attached for active IPs
+    ensure_iptables_quota_for_user(pw)
+
     meta = load_meta()
     data = meta.get(pw, {})
     device_limit = data.get("device_limit", 0)
     data_limit = data.get("data_limit_bytes", 0)
-    data_used = data.get("data_used_bytes", 0)
     expiry_ts = data.get("expiry", None)
-    remaining_bytes = data_limit - data_used if data_limit > 0 else 0
     remaining_days = -1
     if expiry_ts:
         remaining_days = max(0, int((expiry_ts - time.time()) / 86400))
+
+    # Calculate used bytes from iptables if possible, else use stored value
+    used_bytes = data.get("data_used_bytes", 0)
+    if data_limit > 0:
+        quota_left = get_iptables_quota_left(pw)
+        if quota_left is not None:
+            used_bytes = data_limit - quota_left
+            # Update meta with fresh value
+            if used_bytes > data.get("data_used_bytes", 0):
+                data["data_used_bytes"] = used_bytes
+                save_meta(meta)
+        else:
+            # Chain missing – recreate it
+            setup_iptables_quota(pw, data_limit / 1024**3)
+            used_bytes = 0
+
+    remaining_bytes = data_limit - used_bytes if data_limit > 0 else 0
+    remaining_gb = round(remaining_bytes / (1024**3), 2) if remaining_bytes > 0 else 0
+
     devices = get_active_devices_for_user(pw)
+
     return {
         "devices": len(devices),
         "device_limit": device_limit,
-        "remaining_bytes_gb": round(remaining_bytes / (1024**3), 2) if remaining_bytes > 0 else 0,
+        "remaining_bytes_gb": remaining_gb,
         "remaining_days": remaining_days,
         "expired": expiry_ts is not None and expiry_ts < time.time()
     }
 
 def get_active_devices_for_user(pw):
-    ip_user_map = {}
+    """Return list of source IPs currently using this password."""
+    ip_user = {}
     try:
-        lines = subprocess.run(["journalctl", "-u", "zivpn", "-n", "200", "--no-pager"],
+        lines = subprocess.run(["journalctl", "-u", "zivpn", "-n", "1000", "--no-pager"],
                                capture_output=True, text=True, timeout=2).stdout
+        # Improved regex: handles "authenticated" and "auth" with password= or password:
+        pattern = re.compile(r'(?:authenticated|auth).*password[:=](\S+).*from (\d+\.\d+\.\d+\.\d+)', re.IGNORECASE)
         for line in lines.splitlines():
-            if "authenticated" in line and f"password={pw}" in line:
-                m = re.search(r"from (\d+\.\d+\.\d+\.\d+)", line)
-                if m:
-                    ip_user_map[m.group(1)] = pw
-    except: pass
+            m = pattern.search(line)
+            if m:
+                found_pw, ip = m.groups()
+                if found_pw == pw:
+                    ip_user[ip] = pw
+    except:
+        pass
+
+    # Get current UDP connections on our port
     port = get_listen_port()
-    conns = []
+    active_ips = []
     try:
         r = subprocess.run(["ss", "-Hanu"], capture_output=True, text=True, timeout=2)
         for line in r.stdout.splitlines():
@@ -107,10 +195,11 @@ def get_active_devices_for_user(pw):
                     peer = parts[5]
                     if ":" in peer:
                         ip = peer.rsplit(":",1)[0].strip("[]")
-                        if ip in ip_user_map and ip_user_map[ip] == pw:
-                            conns.append(ip)
-    except: pass
-    return list(set(conns))
+                        if ip in ip_user:
+                            active_ips.append(ip)
+    except:
+        pass
+    return list(set(active_ips))
 
 def get_future_timestamp(days):
     try:
@@ -224,7 +313,6 @@ def get_logs(n=30):
         return ""
 
 def server_ip():
-    """Return server IP with caching to avoid slow socket calls."""
     global _ip_cache
     now = time.time()
     if _ip_cache["ip"] and (now - _ip_cache["ts"]) < 60:
@@ -308,7 +396,7 @@ def get_token(handler):
             return p[9:]
     return None
 
-# ========== PROFESSIONAL HTML UI (cPanel-like, Mobile Ready) ==========
+# ========== PROFESSIONAL HTML UI (same as before) ==========
 HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1035,7 +1123,7 @@ setInterval(() => {
 </body>
 </html>"""
 
-# ========== HTTP HANDLER ==========
+# ========== HTTP HANDLER (unchanged) ==========
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
@@ -1167,7 +1255,7 @@ if __name__ == "__main__":
     ip = server_ip()
     start_background_expiry_checker()
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    print(f"NOOBS ZIVPN Web Panel (optimized)  ►  http://{ip}:{port}")
+    print(f"NOOBS ZIVPN Web Panel (fixed)  ►  http://{ip}:{port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
