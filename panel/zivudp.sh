@@ -874,6 +874,8 @@ def update_bandwidth_usage():
                                 save_meta(meta)
                             break
         except: pass
+        # Also ensure chain is attached to current IPs
+        update_iptables_quota(pw, limit)
 
 def enforce_expiry():
     changed = False
@@ -918,6 +920,14 @@ UNIT
   systemctl daemon-reload
   systemctl enable zivpanel zivmon
   systemctl restart zivpanel zivmon
+
+  # Verify services are running
+  sleep 2
+  if systemctl is-active --quiet zivmon; then
+    echo -e "  ${G}✔ zivmon is running${NC}"
+  else
+    echo -e "  ${Y}⚠ zivmon failed to start; bandwidth tracking may be limited.${NC}"
+  fi
 
   iptables -I INPUT -p tcp --dport "$wp_port" -j ACCEPT 2>/dev/null
   local IP=$(server_ip)
