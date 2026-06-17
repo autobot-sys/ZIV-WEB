@@ -28,6 +28,12 @@ DIM='\e[2m'
 NC='\e[0m'          # reset
 PANEL_VERSION="3.1.0"
 
+# ---- global box dimensions ----
+readonly INNER_WIDTH=55          # total characters between left and right box edges
+readonly CONTENT_WIDTH=$((INNER_WIDTH - 2))   # room for text between │ … │
+readonly KEY_FORMAT=" [%2s]  "   # fixed key field, e.g. " [ 1]  "
+readonly DESC_WIDTH=$((CONTENT_WIDTH - 10))   # remaining space for description
+
 draw_header
 
 # Root check
@@ -1121,75 +1127,81 @@ screen_webpanel() {
 # ════════════════════════════════════════════════════════════════
 #  MAIN MENU
 # ════════════════════════════════════════════════════════════════
+# ----------------------------------------------------------------------
+# Helper: print a perfectly aligned menu item
+#   $1 = key (1, 2, …, u, q)
+#   $2 = description
+#   $3 = colour variable (e.g. $G)
+# ----------------------------------------------------------------------
+print_menu_item() {
+    local key="$1" desc="$2" color="$3"
+    local key_fmt
+    key_fmt=$(printf "$KEY_FORMAT" "$key")                     # fixed width key
+    # Build the whole line, padding the description to DESC_WIDTH
+    printf -v line "  ${DIM}│${NC}  ${color}%s${NC}  %-*s${DIM}│${NC}" \
+           "$key_fmt" $DESC_WIDTH "$desc"
+    echo -e "$line"
+}
+
+# ----------------------------------------------------------------------
+# Helper: print a section divider with emoji and dynamic dashes
+#   $1 = emoji (👥, ⚙, …)
+#   $2 = section title
+# ----------------------------------------------------------------------
+print_section_header() {
+    local emoji="$1" title="$2"
+    # visible prefix length: "── " (3) + emoji (2) + "  " (2) + title + " " (1)
+    local visible_prefix_len=$((3 + 2 + 2 + ${#title} + 1))
+    local dashes_count=$((INNER_WIDTH - visible_prefix_len))
+    # Generate a string of '─' of the needed length
+    local dashes
+    dashes=$(printf '%*s' "$dashes_count" '' | tr ' ' '─')
+
+    echo -e "  ${DIM}├── ${emoji}  ${title} ${dashes}┤${NC}"
+}
+
 main_menu() {
     ensure_config
-    local CONTENT_WIDTH=46                # visible width between the box borders
-    # Helper: strip ANSI codes so we can measure real text length
-    _strip_ansi() { echo -e "$1" | sed 's/\x1b\[[0-9;]*m//g'; }
-
-    # Draw a line with custom left / right border characters, content, and a fill char
-    _menu_line() {
-        local left_border="$1" right_border="$2" colored_content="$3" fill_char="$4"
-        local plain; plain=$(_strip_ansi "$colored_content")
-        local len=${#plain}
-        local pad=$(( CONTENT_WIDTH - len ))
-        local fill_str=""
-        local i; for ((i=0; i<pad; i++)); do fill_str+="$fill_char"; done
-        printf "  ${DIM}%s${NC}%s%s${DIM}%s${NC}\n" \
-            "$left_border" "$colored_content" "$fill_str" "$right_border"
-    }
-
-    # Simple option line inside a standard │ ... │ row
-    _menu_option() {
-        _menu_line "│" "│" "$1" " "
-    }
-
-    # Section header with ├── ... ──┤ style
-    _menu_section() {
-        local text="$1"
-        local colored="${C}${BOLD}${text}${NC}"
-        _menu_line "├── " "┤" "$colored" "─"
-    }
-
     while true; do
         draw_header
         draw_dashboard
 
-        # ---- Box top ----
-        local border
-        border=$(printf '─%.0s' $(seq 1 $CONTENT_WIDTH))
-        echo -e "  ${DIM}┌${border}┐${NC}"
+        # ----- Top border -----
+        echo -e "  ${DIM}┌$(printf '─%.0s' $(seq 1 $INNER_WIDTH))┐${NC}"
 
-        # ---- Sections & options ----
-        _menu_section "👥  USER MANAGEMENT"
-        _menu_option "  ${G}[1]${NC}  List All Users + Limits"
-        _menu_option "  ${G}[2]${NC}  Add User (device, data GB, days)"
-        _menu_option "  ${G}[3]${NC}  Bulk Add (unlimited)"
-        _menu_option "  ${Y}[4]${NC}  Trial User (auto‑expires)"
-        _menu_option "  ${R}[5]${NC}  Remove Single User"
-        _menu_option "  ${R}[6]${NC}  Remove Multiple Users"
-        _menu_option "  ${R}[7]${NC}  Clear ALL Users"
+        # ----- User Management -----
+        print_section_header "👥" "USER MANAGEMENT"
+        print_menu_item "1"  "List All Users + Limits"          "$G"
+        print_menu_item "2"  "Add User (device, data GB, days)" "$G"
+        print_menu_item "3"  "Bulk Add (unlimited)"             "$G"
+        print_menu_item "4"  "Trial User (auto‑expires)"        "$Y"
+        print_menu_item "5"  "Remove Single User"               "$R"
+        print_menu_item "6"  "Remove Multiple Users"            "$R"
+        print_menu_item "7"  "Clear ALL Users"                  "$R"
 
-        _menu_section "⚙  SERVICE CONTROL"
-        _menu_option "  ${G}[8]${NC}  Start ZIVPN"
-        _menu_option "  ${R}[9]${NC}  Stop  ZIVPN"
-        _menu_option "  ${Y}[10]${NC} Restart ZIVPN"
-        _menu_option "  ${M}[u]${NC}  Auto-Update from GitHub"
+        # ----- Service Control -----
+        print_section_header "⚙"  "SERVICE CONTROL"
+        print_menu_item "8"  "Start ZIVPN"                      "$G"
+        print_menu_item "9"  "Stop  ZIVPN"                      "$R"
+        print_menu_item "10" "Restart ZIVPN"                    "$Y"
+        print_menu_item "u"  "Auto-Update from GitHub"          "$M"
 
-        _menu_section "🌐  WEB PANEL"
-        _menu_option "  ${M}[w]${NC}  Web Panel (install / manage)"
+        # ----- Web Panel -----
+        print_section_header "🌐" "WEB PANEL"
+        print_menu_item "w"  "Web Panel (install / manage)"     "$M"
 
-        _menu_section "🛠  TOOLS"
-        _menu_option "  ${C}[m]${NC}  Live Monitor + Bandwidth Usage"
-        _menu_option "  ${C}[p]${NC}  Change Listen Port"
-        _menu_option "  ${Y}[c]${NC}  Config Check & Repair"
-        _menu_option "  ${W}[i]${NC}  About / Info"
-        _menu_option "  ${DR}[q]${NC}  Exit"
+        # ----- Tools -----
+        print_section_header "🛠"  "TOOLS"
+        print_menu_item "m"  "Live Monitor + Bandwidth Usage"   "$C"
+        print_menu_item "p"  "Change Listen Port"               "$C"
+        print_menu_item "c"  "Config Check & Repair"            "$Y"
+        print_menu_item "i"  "About / Info"                     "$W"
+        print_menu_item "q"  "Exit"                             "$DR"
 
-        # ---- Box bottom ----
-        echo -e "  ${DIM}└${border}┘${NC}"
+        # ----- Bottom border -----
+        echo -e "  ${DIM}└$(printf '─%.0s' $(seq 1 $INNER_WIDTH))┘${NC}"
 
-        # ---- Prompt ----
+        # Prompt
         echo ""
         echo -ne "  ${C}▶${NC}  Select option: "
         read -r choice
