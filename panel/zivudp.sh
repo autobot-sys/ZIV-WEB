@@ -1122,62 +1122,103 @@ screen_webpanel() {
 #  MAIN MENU
 # ════════════════════════════════════════════════════════════════
 main_menu() {
-  ensure_config
-  while true; do
-    draw_header
-    draw_dashboard
+    ensure_config
+    local CONTENT_WIDTH=46                # visible width between the box borders
+    # Helper: strip ANSI codes so we can measure real text length
+    _strip_ansi() { echo -e "$1" | sed 's/\x1b\[[0-9;]*m//g'; }
 
-    echo -e "  ${DIM}  ┌── 👥  USER MANAGEMENT ──────────────────────────────┐${NC}"
-    echo -e "  ${DIM}  │${NC}  ${G}[1]${NC}  List All Users + Limits                     ${DIM}│${NC}"
-    echo -e "  ${DIM}  │${NC}  ${G}[2]${NC}  Add User (device, data GB, days)            ${DIM}│${NC}"
-    echo -e "  ${DIM}  │${NC}  ${G}[3]${NC}  Bulk Add (unlimited)                         ${DIM}│${NC}"
-    echo -e "  ${DIM}  │${NC}  ${Y}[4]${NC}  Trial User (auto‑expires)                    ${DIM}│${NC}"
-    echo -e "  ${DIM}  │${NC}  ${R}[5]${NC}  Remove Single User                           ${DIM}│${NC}"
-    echo -e "  ${DIM}  │${NC}  ${R}[6]${NC}  Remove Multiple Users                        ${DIM}│${NC}"
-    echo -e "  ${DIM}  │${NC}  ${R}[7]${NC}  Clear ALL Users                              ${DIM}│${NC}"
-    echo -e "  ${DIM}  ├── ⚙  SERVICE CONTROL ───────────────────────────────┤${NC}"
-    echo -e "  ${DIM}  │${NC}  ${G}[8]${NC}  Start ZIVPN                                  ${DIM}│${NC}"
-    echo -e "  ${DIM}  │${NC}  ${R}[9]${NC}  Stop  ZIVPN                                  ${DIM}│${NC}"
-    echo -e "  ${DIM}  │${NC}  ${Y}[10]${NC} Restart ZIVPN                                 ${DIM}│${NC}"
-    echo -e "  ${DIM}  │${NC}  ${M}[u]${NC}  Auto-Update from GitHub                      ${DIM}│${NC}"
-    echo -e "  ${DIM}  ├── 🌐  WEB PANEL ───────────────────────────────────┤${NC}"
-    echo -e "  ${DIM}  │${NC}  ${M}[w]${NC}  Web Panel (install / manage)                ${DIM}│${NC}"
-    echo -e "  ${DIM}  ├── 🛠  TOOLS ────────────────────────────────────────┤${NC}"
-    echo -e "  ${DIM}  │${NC}  ${C}[m]${NC}  Live Monitor + Bandwidth Usage               ${DIM}│${NC}"
-    echo -e "  ${DIM}  │${NC}  ${C}[p]${NC}  Change Listen Port                           ${DIM}│${NC}"
-    echo -e "  ${DIM}  │${NC}  ${Y}[c]${NC}  Config Check & Repair                        ${DIM}│${NC}"
-    echo -e "  ${DIM}  │${NC}  ${W}[i]${NC}  About / Info                                 ${DIM}│${NC}"
-    echo -e "  ${DIM}  │${NC}  ${DR}[q]${NC}  Exit                                         ${DIM}│${NC}"
-    echo -e "  ${DIM}  └────────────────────────────────────────────────────┘${NC}"
-    echo ""
-    echo -ne "  ${C}▶${NC}  Select option: "
-    read -r choice
+    # Draw a line with custom left / right border characters, content, and a fill char
+    _menu_line() {
+        local left_border="$1" right_border="$2" colored_content="$3" fill_char="$4"
+        local plain; plain=$(_strip_ansi "$colored_content")
+        local len=${#plain}
+        local pad=$(( CONTENT_WIDTH - len ))
+        local fill_str=""
+        local i; for ((i=0; i<pad; i++)); do fill_str+="$fill_char"; done
+        printf "  ${DIM}%s${NC}%s%s${DIM}%s${NC}\n" \
+            "$left_border" "$colored_content" "$fill_str" "$right_border"
+    }
 
-    case "$choice" in
-      1)    screen_list        ;;
-      2)    screen_add_user    ;;
-      3)    screen_bulk_add    ;;
-      4)    screen_trial_user  ;;
-      5)    screen_remove_user ;;
-      6)    screen_bulk_remove ;;
-      7)    screen_clear_all   ;;
-      8)    screen_start       ;;
-      9)    screen_stop        ;;
-      10)   screen_restart     ;;
-      u|U)  screen_autoupdate  ;;
-      w|W)  screen_webpanel    ;;
-      m|M)  screen_monitor     ;;
-      p|P)  screen_change_port ;;
-      c|C)  screen_config_check;;
-      i|I)  screen_about       ;;
-      q|Q|0)
-        clear
-        echo -e "\n  ${C}  ★  NOOBS ZIVPN UDP PANEL — Goodbye!  ★${NC}\n"
-        exit 0 ;;
-      *)
-        echo -e "\n  ${R}  ✘  Invalid option.${NC}"; sleep 1 ;;
-    esac
-  done
+    # Simple option line inside a standard │ ... │ row
+    _menu_option() {
+        _menu_line "│" "│" "$1" " "
+    }
+
+    # Section header with ├── ... ──┤ style
+    _menu_section() {
+        local text="$1"
+        local colored="${C}${BOLD}${text}${NC}"
+        _menu_line "├── " "┤" "$colored" "─"
+    }
+
+    while true; do
+        draw_header
+        draw_dashboard
+
+        # ---- Box top ----
+        local border
+        border=$(printf '─%.0s' $(seq 1 $CONTENT_WIDTH))
+        echo -e "  ${DIM}┌${border}┐${NC}"
+
+        # ---- Sections & options ----
+        _menu_section "👥  USER MANAGEMENT"
+        _menu_option "  ${G}[1]${NC}  List All Users + Limits"
+        _menu_option "  ${G}[2]${NC}  Add User (device, data GB, days)"
+        _menu_option "  ${G}[3]${NC}  Bulk Add (unlimited)"
+        _menu_option "  ${Y}[4]${NC}  Trial User (auto‑expires)"
+        _menu_option "  ${R}[5]${NC}  Remove Single User"
+        _menu_option "  ${R}[6]${NC}  Remove Multiple Users"
+        _menu_option "  ${R}[7]${NC}  Clear ALL Users"
+
+        _menu_section "⚙  SERVICE CONTROL"
+        _menu_option "  ${G}[8]${NC}  Start ZIVPN"
+        _menu_option "  ${R}[9]${NC}  Stop  ZIVPN"
+        _menu_option "  ${Y}[10]${NC} Restart ZIVPN"
+        _menu_option "  ${M}[u]${NC}  Auto-Update from GitHub"
+
+        _menu_section "🌐  WEB PANEL"
+        _menu_option "  ${M}[w]${NC}  Web Panel (install / manage)"
+
+        _menu_section "🛠  TOOLS"
+        _menu_option "  ${C}[m]${NC}  Live Monitor + Bandwidth Usage"
+        _menu_option "  ${C}[p]${NC}  Change Listen Port"
+        _menu_option "  ${Y}[c]${NC}  Config Check & Repair"
+        _menu_option "  ${W}[i]${NC}  About / Info"
+        _menu_option "  ${DR}[q]${NC}  Exit"
+
+        # ---- Box bottom ----
+        echo -e "  ${DIM}└${border}┘${NC}"
+
+        # ---- Prompt ----
+        echo ""
+        echo -ne "  ${C}▶${NC}  Select option: "
+        read -r choice
+
+        case "$choice" in
+            1)    screen_list        ;;
+            2)    screen_add_user    ;;
+            3)    screen_bulk_add    ;;
+            4)    screen_trial_user  ;;
+            5)    screen_remove_user ;;
+            6)    screen_bulk_remove ;;
+            7)    screen_clear_all   ;;
+            8)    screen_start       ;;
+            9)    screen_stop        ;;
+            10)   screen_restart     ;;
+            u|U)  screen_autoupdate  ;;
+            w|W)  screen_webpanel    ;;
+            m|M)  screen_monitor     ;;
+            p|P)  screen_change_port ;;
+            c|C)  screen_config_check;;
+            i|I)  screen_about       ;;
+            q|Q|0)
+                clear
+                echo -e "\n  ${C}  ★  NOOBS ZIVPN UDP PANEL — Goodbye!  ★${NC}\n"
+                exit 0 ;;
+            *)
+                echo -e "\n  ${R}  ✘  Invalid option.${NC}"; sleep 1 ;;
+        esac
+    done
 }
 
 main_menu
