@@ -263,24 +263,69 @@ draw_header() {
     # ── Bottom border ─────────────────────────────
     printf "  ${C}╚%s╝${NC}\n" "$border_line"
 }
+# ── Helper: format a single table cell (exactly 30 visible columns) ──
+_format_cell() {
+    local label="$1" value="$2" label_color="$3" value_color="$4"
+    local visible_length label_len=${#label} value_len=${#value}
+    local max_value_len pad_total space_count pad_right
+
+    # Maximum value length = 30 - label_len - 1 (for the space between) - 1 (for safety)
+    max_value_len=$(( 30 - label_len - 1 ))
+    if (( max_value_len < 0 )); then max_value_len=0; fi
+
+    # Truncate value if too long, append ellipsis
+    if (( value_len > max_value_len )); then
+        value="${value:0:$((max_value_len-1))}…"
+        value_len=$(( max_value_len ))
+    fi
+
+    # Total visible length so far: label + space + value
+    visible_length=$(( label_len + 1 + value_len ))
+    pad_total=$(( 30 - visible_length ))
+    # Safety: pad_total could be negative if max_value_len calculation off, but it shouldn't be
+    (( pad_total < 0 )) && pad_total=0
+
+    # Build the cell: label, space, coloured value, then trailing padding
+    printf "%b" "${label_color}${label}${NC} "
+    printf "%b" "${value_color}${value}${NC}"
+    printf "%*s" "$pad_total" ""          # right padding
+}
+
+# ── Dashboard ─────────────────────────────────────────────
 draw_dashboard() {
-  ensure_config
-  local CNT=$(pwd_count)
-  local IP=$(server_ip)
-  local PORT=$(get_port)
-  local SVC_TXT SVC_COL
-  if svc_running; then
-    SVC_TXT="RUNNING"; SVC_COL="${G}"
-  else
-    SVC_TXT="STOPPED"; SVC_COL="${R}"
-  fi
-  echo ""
-  echo -e "${DIM}  ┌──────────────────────────────┬──────────────────────────────┐${NC}"
-  printf  "  ${DIM}│${NC}  ${DW}Service${NC}  ${SVC_COL}%-20s${NC}  ${DIM}│${NC}  ${DW}IP${NC}      ${W}%-20s${NC}  ${DIM}│${NC}\n" "$SVC_TXT" "$IP"
-  printf  "  ${DIM}│${NC}  ${DW}Port   ${NC}  ${Y}%-20s${NC}  ${DIM}│${NC}  ${DW}Relay${NC}   ${W}%-20s${NC}  ${DIM}│${NC}\n" "${PORT}/udp" "6000-19999/udp"
-  printf  "  ${DIM}│${NC}  ${DW}Obfs   ${NC}  ${C}%-20s${NC}  ${DIM}│${NC}  ${DW}Users${NC}   ${Y}%-20s${NC}  ${DIM}│${NC}\n" "zivpn" "${CNT} active"
-  echo -e "${DIM}  └──────────────────────────────┴──────────────────────────────┘${NC}"
-  echo ""
+    ensure_config
+    local CNT=$(pwd_count)
+    local IP=$(server_ip)
+    local PORT=$(get_port)
+    local SVC_TXT SVC_COL
+    if svc_running; then
+        SVC_TXT="RUNNING"; SVC_COL="${G}"
+    else
+        SVC_TXT="STOPPED"; SVC_COL="${R}"
+    fi
+
+    # Build each row's cells (30 characters visible each)
+    local srv_cell ip_cell port_cell relay_cell obfs_cell users_cell
+    srv_cell=$(_format_cell "Service" "$SVC_TXT"      "${DW}" "${SVC_COL}")
+    ip_cell=$(_format_cell  "IP"      "$IP"            "${DW}" "${W}")
+    port_cell=$(_format_cell "Port"   "${PORT}/udp"    "${DW}" "${Y}")
+    relay_cell=$(_format_cell "Relay" "6000-19999/udp" "${DW}" "${W}")
+    obfs_cell=$(_format_cell "Obfs"   "zivpn"          "${DW}" "${C}")
+    users_cell=$(_format_cell "Users" "${CNT} active"   "${DW}" "${Y}")
+
+    # Top border (30 dashes each side)
+    local sep="──────────────────────────────"
+    echo -e "\n  ${DIM}┌${sep}┬${sep}┐${NC}"
+
+    # Row 1
+    printf "  ${DIM}│${NC}%s${DIM}│${NC}%s${DIM}│${NC}\n" "$srv_cell" "$ip_cell"
+    # Row 2
+    printf "  ${DIM}│${NC}%s${DIM}│${NC}%s${DIM}│${NC}\n" "$port_cell" "$relay_cell"
+    # Row 3
+    printf "  ${DIM}│${NC}%s${DIM}│${NC}%s${DIM}│${NC}\n" "$obfs_cell" "$users_cell"
+
+    # Bottom border
+    echo -e "  ${DIM}└${sep}┴${sep}┘${NC}\n"
 }
 
 section() {
