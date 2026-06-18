@@ -28,12 +28,6 @@ DIM='\e[2m'
 NC='\e[0m'          # reset
 PANEL_VERSION="3.1.0"
 
-# ---- global box dimensions ----
-readonly INNER_WIDTH=55          # total characters between left and right box edges
-readonly CONTENT_WIDTH=$((INNER_WIDTH - 2))   # room for text between │ … │
-readonly KEY_FORMAT=" [%2s]  "   # fixed key field, e.g. " [ 1]  "
-readonly DESC_WIDTH=$((CONTENT_WIDTH - 10))   # remaining space for description
-
 draw_header
 
 # Root check
@@ -1127,110 +1121,123 @@ screen_webpanel() {
 # ════════════════════════════════════════════════════════════════
 #  MAIN MENU
 # ════════════════════════════════════════════════════════════════
-# ----------------------------------------------------------------------
-# Helper: print a perfectly aligned menu item
-#   $1 = key (1, 2, …, u, q)
-#   $2 = description
-#   $3 = colour variable (e.g. $G)
-# ----------------------------------------------------------------------
-print_menu_item() {
-    local key="$1" desc="$2" color="$3"
-    local key_fmt
-    key_fmt=$(printf "$KEY_FORMAT" "$key")                     # fixed width key
-    # Build the whole line, padding the description to DESC_WIDTH
-    printf -v line "  ${DIM}│${NC}  ${color}%s${NC}  %-*s${DIM}│${NC}" \
-           "$key_fmt" $DESC_WIDTH "$desc"
-    echo -e "$line"
-}
-
-# ----------------------------------------------------------------------
-# Helper: print a section divider with emoji and dynamic dashes
-#   $1 = emoji (👥, ⚙, …)
-#   $2 = section title
-# ----------------------------------------------------------------------
-print_section_header() {
-    local emoji="$1" title="$2"
-    # visible prefix length: "── " (3) + emoji (2) + "  " (2) + title + " " (1)
-    local visible_prefix_len=$((3 + 2 + 2 + ${#title} + 1))
-    local dashes_count=$((INNER_WIDTH - visible_prefix_len))
-    # Generate a string of '─' of the needed length
-    local dashes
-    dashes=$(printf '%*s' "$dashes_count" '' | tr ' ' '─')
-
-    echo -e "  ${DIM}├── ${emoji}  ${title} ${dashes}┤${NC}"
-}
-
 main_menu() {
-    ensure_config
-    while true; do
-        draw_header
-        draw_dashboard
+  ensure_config
 
-        # ----- Top border -----
-        echo -e "  ${DIM}┌$(printf '─%.0s' $(seq 1 $INNER_WIDTH))┐${NC}"
+  # ─────────────────────────────────────────────────────────────────────
+  #  Box geometry  →  inner width = 56 terminal columns
+  #  Item layout:  ║  [key : 4 chars]  [desc : %-48s]  ║
+  #                    2       4        2       48     = 56
+  # ─────────────────────────────────────────────────────────────────────
 
-        # ----- User Management -----
-        print_section_header "👥" "USER MANAGEMENT"
-        print_menu_item "1"  "List All Users + Limits"          "$G"
-        print_menu_item "2"  "Add User (device, data GB, days)" "$G"
-        print_menu_item "3"  "Bulk Add (unlimited)"             "$G"
-        print_menu_item "4"  "Trial User (auto‑expires)"        "$Y"
-        print_menu_item "5"  "Remove Single User"               "$R"
-        print_menu_item "6"  "Remove Multiple Users"            "$R"
-        print_menu_item "7"  "Clear ALL Users"                  "$R"
+  local BC='\033[1;36m'   # bold-cyan — used only for section headings
 
-        # ----- Service Control -----
-        print_section_header "⚙"  "SERVICE CONTROL"
-        print_menu_item "8"  "Start ZIVPN"                      "$G"
-        print_menu_item "9"  "Stop  ZIVPN"                      "$R"
-        print_menu_item "10" "Restart ZIVPN"                    "$Y"
-        print_menu_item "u"  "Auto-Update from GitHub"          "$M"
+  # _mi  COLOR  KEY  DESCRIPTION
+  # Renders one menu-item row with pixel-perfect column alignment.
+  _mi() {
+    local c="$1" k="$2" d="$3" kp
+    [[ ${#k} -eq 1 ]] && kp="[${k}] " || kp="[${k}]"   # pad key to 4 chars
+    printf "  ${DIM}║${NC}  ${c}%s${NC}  %-48s${DIM}║${NC}\n" "$kp" "$d"
+  }
 
-        # ----- Web Panel -----
-        print_section_header "🌐" "WEB PANEL"
-        print_menu_item "w"  "Web Panel (install / manage)"     "$M"
+  # _ms  ICON_TERMINAL_COLS  ICON  TITLE
+  # Renders one section-header row; pad is computed so the right ║ always lands
+  # at column 60 regardless of title length.
+  _ms() {
+    local iw="$1" icon="$2" title="$3"
+    local pad=$(( 56 - 2 - iw - 2 - ${#title} ))
+    printf "  ${DIM}║${NC}  ${BC}%s  %s${NC}%*s${DIM}║${NC}\n" \
+      "$icon" "$title" "$pad" ""
+  }
 
-        # ----- Tools -----
-        print_section_header "🛠"  "TOOLS"
-        print_menu_item "m"  "Live Monitor + Bandwidth Usage"   "$C"
-        print_menu_item "p"  "Change Listen Port"               "$C"
-        print_menu_item "c"  "Config Check & Repair"            "$Y"
-        print_menu_item "i"  "About / Info"                     "$W"
-        print_menu_item "q"  "Exit"                             "$DR"
+  # Pre-built frame strings  (IW = 56; 2-space left indent)
+  # TOP / BOT : ╔╗/╚╝ + 56 × ═
+  # EMP       : ║ + 56 spaces  + ║      (breathing room between sections)
+  # LIN       : ║ + 2sp + 52 × ─ + 2sp + ║   (sub-header divider)
+  local TOP BOT EMP LIN
+  TOP="  ${DIM}╔════════════════════════════════════════════════════════╗${NC}"
+  BOT="  ${DIM}╚════════════════════════════════════════════════════════╝${NC}"
+  EMP="  ${DIM}║                                                        ║${NC}"
+  LIN="  ${DIM}║  ────────────────────────────────────────────────────  ║${NC}"
 
-        # ----- Bottom border -----
-        echo -e "  ${DIM}└$(printf '─%.0s' $(seq 1 $INNER_WIDTH))┘${NC}"
+  while true; do
+    draw_header
+    draw_dashboard
 
-        # Prompt
-        echo ""
-        echo -ne "  ${C}▶${NC}  Select option: "
-        read -r choice
+    echo -e "$TOP"
+    echo -e "$EMP"
 
-        case "$choice" in
-            1)    screen_list        ;;
-            2)    screen_add_user    ;;
-            3)    screen_bulk_add    ;;
-            4)    screen_trial_user  ;;
-            5)    screen_remove_user ;;
-            6)    screen_bulk_remove ;;
-            7)    screen_clear_all   ;;
-            8)    screen_start       ;;
-            9)    screen_stop        ;;
-            10)   screen_restart     ;;
-            u|U)  screen_autoupdate  ;;
-            w|W)  screen_webpanel    ;;
-            m|M)  screen_monitor     ;;
-            p|P)  screen_change_port ;;
-            c|C)  screen_config_check;;
-            i|I)  screen_about       ;;
-            q|Q|0)
-                clear
-                echo -e "\n  ${C}  ★  NOOBS ZIVPN UDP PANEL — Goodbye!  ★${NC}\n"
-                exit 0 ;;
-            *)
-                echo -e "\n  ${R}  ✘  Invalid option.${NC}"; sleep 1 ;;
-        esac
-    done
+    # ── USER MANAGEMENT ──────────────────────────────────────────────
+    _ms 2 "👥" "USER MANAGEMENT"
+    echo -e "$LIN"
+    _mi "$G"   1  "List All Users + Limits"
+    _mi "$G"   2  "Add User  ·  device · data GB · days"
+    _mi "$G"   3  "Bulk Add  (unlimited)"
+    _mi "$Y"   4  "Trial User  (auto-expires)"
+    _mi "$R"   5  "Remove Single User"
+    _mi "$R"   6  "Remove Multiple Users"
+    _mi "$R"   7  "Clear ALL Users"
+    echo -e "$EMP"
+
+    # ── SERVICE CONTROL ───────────────────────────────────────────────
+    _ms 2 "🔧" "SERVICE CONTROL"
+    echo -e "$LIN"
+    _mi "$G"   8  "Start ZIVPN"
+    _mi "$R"   9  "Stop  ZIVPN"
+    _mi "$Y"  10  "Restart ZIVPN"
+    _mi "$M"   u  "Auto-Update from GitHub"
+    echo -e "$EMP"
+
+    # ── WEB PANEL ─────────────────────────────────────────────────────
+    _ms 2 "🌐" "WEB PANEL"
+    echo -e "$LIN"
+    _mi "$M"   w  "Web Panel  (install / manage)"
+    echo -e "$EMP"
+
+    # ── TOOLS ─────────────────────────────────────────────────────────
+    _ms 2 "🛠" "TOOLS"
+    echo -e "$LIN"
+    _mi "$C"   m  "Live Monitor + Bandwidth Usage"
+    _mi "$C"   p  "Change Listen Port"
+    _mi "$Y"   c  "Config Check & Repair"
+    _mi "$W"   i  "About / Info"
+    echo -e "$EMP"
+
+    # ── EXIT ──────────────────────────────────────────────────────────
+    _mi "$DR"  q  "Exit"
+    echo -e "$EMP"
+    echo -e "$BOT"
+
+    echo ""
+    echo -ne "  ${C}▶  ${NC}Select option: "
+    read -r choice
+
+    case "$choice" in
+      1)       screen_list         ;;
+      2)       screen_add_user     ;;
+      3)       screen_bulk_add     ;;
+      4)       screen_trial_user   ;;
+      5)       screen_remove_user  ;;
+      6)       screen_bulk_remove  ;;
+      7)       screen_clear_all    ;;
+      8)       screen_start        ;;
+      9)       screen_stop         ;;
+      10)      screen_restart      ;;
+      u|U)     screen_autoupdate   ;;
+      w|W)     screen_webpanel     ;;
+      m|M)     screen_monitor      ;;
+      p|P)     screen_change_port  ;;
+      c|C)     screen_config_check ;;
+      i|I)     screen_about        ;;
+      q|Q|0)
+        clear
+        echo -e "\n  ${C}  ★  NOOBS ZIVPN UDP PANEL — Goodbye!  ★${NC}\n"
+        exit 0 ;;
+      *)
+        echo -e "\n  ${R}  ✘  Invalid option — try again.${NC}\n"
+        sleep 1 ;;
+    esac
+  done
 }
 
 main_menu
