@@ -2,10 +2,10 @@
 # ═══════════════════════════════════════════════════════════════
 #  NOOBS ZIVPN UDP PANEL  —  zivudp
 #  Repo    : https://github.com/autobot-sys/ZIV-WEB
-#  Version : 2.2.0 (with user limits & monitoring)
+#  Version : 3.1.0 (with all fixes)
 # ═══════════════════════════════════════════════════════════════
 
-PANEL_VERSION="2.2.0"
+PANEL_VERSION="3.1.0"
 CONFIG_FILE="/etc/zivpn/config.json"
 DB_FILE="/etc/zivpn/users.db"
 META_FILE="/etc/zivpn/users_meta.json"
@@ -21,27 +21,46 @@ R='\033[1;31m'; G='\033[1;32m'; Y='\033[1;33m'; B='\033[1;34m'
 M='\033[1;35m'; C='\033[1;36m'; W='\033[1;37m'; DR='\033[0;31m'
 DG='\033[0;32m'; DY='\033[0;33m'; DC='\033[0;36m'; DW='\033[0;37m'
 DIM='\033[2m'; BOLD='\033[1m'; NC='\033[0m'
-C='\e[36m'          # cyan
-BOLD='\e[1m'
-Y='\e[33m'          # yellow
-DIM='\e[2m'
-NC='\e[0m'          # reset
-PANEL_VERSION="3.1.0"
 
-draw_header
+draw_header() {
+    clear
+    local box_width=60
+    _center_line() {
+        local text="$1" colour="$2"
+        local text_len=${#text}
+        local pad_left=$(( (box_width - text_len) / 2 ))
+        local pad_right=$(( box_width - text_len - pad_left ))
+        printf "  ${C}║${NC}"
+        printf "%*s" "$pad_left" ""
+        printf "%b" "${colour}${text}${NC}"
+        printf "%*s" "$pad_right" ""
+        printf "${C}║${NC}\n"
+    }
+    local border_line
+    border_line=$(printf '═%.0s' $(seq 1 $box_width))
+    printf "  ${C}╔%s╗${NC}\n" "$border_line"
+    _center_line "" ""
+    _center_line "███╗   ██╗ ██████╗  ██████╗ ██████╗ ███████╗" ""
+    _center_line "████╗  ██║██╔═══██╗██╔═══██╗██╔══██╗██╔════╝" ""
+    _center_line "██╔██╗ ██║██║   ██║██║   ██║██████╔╝███████╗" ""
+    _center_line "██║╚██╗██║██║   ██║██║   ██║██╔══██╗╚════██║" ""
+    _center_line "██║ ╚████║╚██████╔╝╚██████╔╝██████╔╝███████║" ""
+    _center_line "╚═╝  ╚═══╝ ╚═════╝  ╚═════╝ ╚═════╝ ╚══════╝" ""
+    _center_line "" ""
+    local title="  ━━━━━━ Z I V P N  U D P  P A N E L ━━━━━━   "
+    _center_line "$title" "${Y}${BOLD}"
+    local subtitle=" @ARDVAK == https://t.me/noobsvpn  -  v${PANEL_VERSION} "
+    _center_line "$subtitle" "${DIM}"
+    printf "  ${C}╚%s╝${NC}\n" "$border_line"
+}
 
-# Root check
+# ========== CORE HELPERS ==========
 [ "$EUID" -ne 0 ] && { echo -e "\n  ${R}✘  Run as root: sudo zivudp${NC}\n"; exit 1; }
 
-# Ensure jq
 if ! command -v jq &>/dev/null; then
   echo -e "${Y}Installing jq...${NC}"
   apt-get install -y jq -qq &>/dev/null
 fi
-
-# ════════════════════════════════════════════════════════════════
-#  CORE HELPERS — CONFIG & METADATA
-# ════════════════════════════════════════════════════════════════
 
 svc_running() { systemctl is-active --quiet zivpn; }
 
@@ -61,7 +80,6 @@ ensure_config() {
 }
 CONF
   fi
-  # Repair if auth missing
   if ! jq -e '.auth' "$CONFIG_FILE" &>/dev/null; then
     jq '. + {"auth": {"mode": "passwords", "config": []}}' "$CONFIG_FILE" > /tmp/zv_fix.json && mv /tmp/zv_fix.json "$CONFIG_FILE"
   fi
@@ -72,13 +90,12 @@ CONF
   [ ! -f "$DB_FILE" ] && touch "$DB_FILE"
 }
 
-# Get all passwords (plain list)
 get_passwords() {
   ensure_config
   jq -r '.auth.config[]' "$CONFIG_FILE" 2>/dev/null
 }
 
-# Add a password + metadata with limits
+# Updated add_password: uses local time only
 add_password() {
   local pass="$1"
   local dev_limit="$2"
@@ -86,7 +103,6 @@ add_password() {
   local valid_days="$4"
   ensure_config
   jq --arg p "$pass" '.auth.config += [$p]' "$CONFIG_FILE" > /tmp/zv_tmp.json && mv /tmp/zv_tmp.json "$CONFIG_FILE"
-  # Add metadata
   python3 -c "
 import json, time
 META='$META_FILE'
@@ -94,13 +110,7 @@ meta = json.load(open(META)) if __import__('os').path.exists(META) else {}
 if '$pass' not in meta:
     expiry = None
     if $valid_days > 0:
-        # Use TimeAPI for accurate future timestamp
-        import urllib.request
-        try:
-            with urllib.request.urlopen('https://timeapi.io/api/Time/current/zone?timeZone=UTC', timeout=5) as resp:
-                now = json.load(resp).get('epochTime', time.time())
-        except:
-            now = time.time()
+        now = time.time()   # local time only
         expiry = now + $valid_days * 86400
     meta['$pass'] = {
         'device_limit': $dev_limit,
@@ -111,13 +121,11 @@ if '$pass' not in meta:
     }
     json.dump(meta, open(META, 'w'), indent=2)
 "
-  # Setup iptables quota if data limit > 0
   if [ "$data_gb" -gt 0 ]; then
     setup_iptables_quota "$pass" "$data_gb"
   fi
 }
 
-# Remove password and metadata + iptables chain
 remove_password() {
   local pass="$1"
   ensure_config
@@ -133,19 +141,16 @@ if __import__('os').path.exists(META):
   delete_iptables_chain "$pass"
 }
 
-# Clear all users
 clear_passwords() {
   ensure_config
   jq '.auth.config = []' "$CONFIG_FILE" > /tmp/zv_tmp.json && mv /tmp/zv_tmp.json "$CONFIG_FILE"
   echo '{}' > "$META_FILE"
-  # Flush all ZIV_USER_ chains
   for chain in $(iptables -L | grep '^ZIV_USER_' | awk '{print $1}'); do
     iptables -F "$chain" 2>/dev/null
     iptables -X "$chain" 2>/dev/null
   done
 }
 
-# iptables quota helpers
 setup_iptables_quota() {
   local pass="$1"
   local limit_gb="$2"
@@ -160,7 +165,9 @@ setup_iptables_quota() {
 delete_iptables_chain() {
   local pass="$1"
   local chain="ZIV_USER_$pass"
-  iptables -D INPUT -j "$chain" 2>/dev/null
+  for dir in INPUT OUTPUT; do
+    iptables -D "$dir" -j "$chain" 2>/dev/null
+  done
   iptables -F "$chain" 2>/dev/null
   iptables -X "$chain" 2>/dev/null
 }
@@ -171,6 +178,7 @@ attach_ip_to_quota() {
   local port=$(get_port)
   local chain="ZIV_USER_$pass"
   iptables -I INPUT -s "$ip" -p udp --dport "$port" -j "$chain" 2>/dev/null
+  iptables -I OUTPUT -d "$ip" -p udp --dport "$port" -j "$chain" 2>/dev/null
 }
 
 pwd_count() {
@@ -205,93 +213,24 @@ result_ok()   { echo -e "\n  ${G}  ✔  $*${NC}"; }
 result_warn() { echo -e "\n  ${Y}  ⚠  $*${NC}"; }
 result_err()  { echo -e "\n  ${R}  ✘  $*${NC}"; }
 
-# ════════════════════════════════════════════════════════════════
-#  HEADER & DASHBOARD
-# ════════════════════════════════════════════════════════════════
-
-draw_header() {
-    clear
-
-    # ── Configuration ──────────────────────────────
-    local box_width=60                    # interior width between borders
-    # Colour variables are expected to be defined globally, e.g.:
-    #   C='\e[36m'  BOLD='\e[1m'  Y='\e[33m'  DIM='\e[2m'  NC='\e[0m'
-
-    # Helper – centres a plain string inside the box, applying optional colour
-    _center_line() {
-        local text="$1" colour="$2"
-        local text_len=${#text}
-        local pad_left=$(( (box_width - text_len) / 2 ))
-        local pad_right=$(( box_width - text_len - pad_left ))
-
-        printf "  ${C}║${NC}"                   # left border
-        printf "%*s" "$pad_left" ""          # left padding
-        printf "%b" "${colour}${text}${NC}"  # coloured text (use %b for escapes)
-        printf "%*s" "$pad_right" ""         # right padding
-        printf "${C}║${NC}\n"                # right border
-    }
-
-    # ── Top border ────────────────────────────────
-    local border_line
-    border_line=$(printf '═%.0s' $(seq 1 $box_width))
-    printf "  ${C}╔%s╗${NC}\n" "$border_line"
-
-    # ── Blank line ────────────────────────────────
-    _center_line "" ""
-
-    # ── ASCII art (NOOBS) – exactly 44 chars wide ──
-    _center_line "███╗   ██╗ ██████╗  ██████╗ ██████╗ ███████╗" ""
-    _center_line "████╗  ██║██╔═══██╗██╔═══██╗██╔══██╗██╔════╝" ""
-    _center_line "██╔██╗ ██║██║   ██║██║   ██║██████╔╝███████╗" ""
-    _center_line "██║╚██╗██║██║   ██║██║   ██║██╔══██╗╚════██║" ""
-    _center_line "██║ ╚████║╚██████╔╝╚██████╔╝██████╔╝███████║" ""
-    _center_line "╚═╝  ╚═══╝ ╚═════╝  ╚═════╝ ╚═════╝ ╚══════╝" ""
-
-    # ── Blank line ────────────────────────────────
-    _center_line "" ""
-
-    # ── Title ──────────────────────────────────────
-    # 2 leading & 3 trailing spaces kept from original design (total 46 chars)
-    local title="  ━━━━━━ Z I V P N  U D P  P A N E L ━━━━━━   "
-    _center_line "$title" "${Y}${BOLD}"
-
-    # ── Subtitle ──────────────────────────────────
-    # Version-dependent string – no extra padding; centring adds it symmetrically
-    local subtitle=" @ARDVAK == https://t.me/noobsvpn  -  v${PANEL_VERSION} "
-    _center_line "$subtitle" "${DIM}"
-
-    # ── Bottom border ─────────────────────────────
-    printf "  ${C}╚%s╝${NC}\n" "$border_line"
-}
-# ── Helper: format a single table cell (exactly 30 visible columns) ──
 _format_cell() {
     local label="$1" value="$2" label_color="$3" value_color="$4"
     local visible_length label_len=${#label} value_len=${#value}
     local max_value_len pad_total space_count pad_right
-
-    # Maximum value length = 30 - label_len - 1 (for the space between) - 1 (for safety)
     max_value_len=$(( 30 - label_len - 1 ))
     if (( max_value_len < 0 )); then max_value_len=0; fi
-
-    # Truncate value if too long, append ellipsis
     if (( value_len > max_value_len )); then
         value="${value:0:$((max_value_len-1))}…"
         value_len=$(( max_value_len ))
     fi
-
-    # Total visible length so far: label + space + value
     visible_length=$(( label_len + 1 + value_len ))
     pad_total=$(( 30 - visible_length ))
-    # Safety: pad_total could be negative if max_value_len calculation off, but it shouldn't be
     (( pad_total < 0 )) && pad_total=0
-
-    # Build the cell: label, space, coloured value, then trailing padding
     printf "%b" "${label_color}${label}${NC} "
     printf "%b" "${value_color}${value}${NC}"
-    printf "%*s" "$pad_total" ""          # right padding
+    printf "%*s" "$pad_total" ""
 }
 
-# ── Dashboard ─────────────────────────────────────────────
 draw_dashboard() {
     ensure_config
     local CNT=$(pwd_count)
@@ -303,8 +242,6 @@ draw_dashboard() {
     else
         SVC_TXT="STOPPED"; SVC_COL="${R}"
     fi
-
-    # Build each row's cells (30 characters visible each)
     local srv_cell ip_cell port_cell relay_cell obfs_cell users_cell
     srv_cell=$(_format_cell "Service" "$SVC_TXT"      "${DW}" "${SVC_COL}")
     ip_cell=$(_format_cell  "IP"      "$IP"            "${DW}" "${W}")
@@ -312,19 +249,11 @@ draw_dashboard() {
     relay_cell=$(_format_cell "Relay" "6000-19999/udp" "${DW}" "${W}")
     obfs_cell=$(_format_cell "Obfs"   "zivpn"          "${DW}" "${C}")
     users_cell=$(_format_cell "Users" "${CNT} active"   "${DW}" "${Y}")
-
-    # Top border (30 dashes each side)
     local sep="──────────────────────────────"
     echo -e "\n  ${DIM}┌${sep}┬${sep}┐${NC}"
-
-    # Row 1
     printf "  ${DIM}│${NC}%s${DIM}│${NC}%s${DIM}│${NC}\n" "$srv_cell" "$ip_cell"
-    # Row 2
     printf "  ${DIM}│${NC}%s${DIM}│${NC}%s${DIM}│${NC}\n" "$port_cell" "$relay_cell"
-    # Row 3
     printf "  ${DIM}│${NC}%s${DIM}│${NC}%s${DIM}│${NC}\n" "$obfs_cell" "$users_cell"
-
-    # Bottom border
     echo -e "  ${DIM}└${sep}┴${sep}┘${NC}\n"
 }
 
@@ -336,13 +265,10 @@ section() {
   echo ""
 }
 
-# ════════════════════════════════════════════════════════════════
-#  [1]  LIST USERS (including limits from metadata)
-# ════════════════════════════════════════════════════════════════
+# ========== SCREENS (unchanged, except they call updated helpers) ==========
 screen_list() {
   draw_header; draw_dashboard
   section "$B" "👥   USER / PASSWORD LIST WITH LIMITS"
-
   mapfile -t PWDS < <(get_passwords)
   if [ ${#PWDS[@]} -eq 0 ]; then
     echo -e "  ${DIM}  ┄ No passwords configured. Use [2] to add users. ┄${NC}"
@@ -352,7 +278,6 @@ screen_list() {
     echo -e "  ${DIM}  ├──────┼──────────────────────────┼──────────┼──────────┼─────────────┤${NC}"
     local i=1
     for p in "${PWDS[@]}"; do
-      # Fetch metadata
       local dev_limit data_gb expiry_days
       dev_limit=$(python3 -c "import json; d=json.load(open('$META_FILE')); print(d.get('$p',{}).get('device_limit',0))" 2>/dev/null)
       data_gb=$(python3 -c "import json; d=json.load(open('$META_FILE')); b=d.get('$p',{}).get('data_limit_bytes',0); print(round(b/1024**3,1) if b>0 else 0)" 2>/dev/null)
@@ -366,7 +291,6 @@ screen_list() {
     echo -e "  ${DIM}  └──────┴──────────────────────────┴──────────┴──────────┴─────────────┘${NC}"
     echo -e "\n  ${DIM}  Total:${NC} ${Y}${#PWDS[@]} user(s)${NC}"
   fi
-
   local IP=$(server_ip)
   local PORT=$(get_port)
   echo ""
@@ -379,22 +303,16 @@ screen_list() {
   press_any
 }
 
-# ════════════════════════════════════════════════════════════════
-#  [2]  ADD USER (with device limit, data GB, validity days)
-# ════════════════════════════════════════════════════════════════
 screen_add_user() {
   draw_header; draw_dashboard
   section "$G" "➕   ADD NEW USER (with limits)"
-
   echo -ne "  ${DW}Password${NC}  ${DIM}▶${NC} "
   read -r new_pass
   new_pass=$(echo "$new_pass" | xargs)
   [ -z "$new_pass" ] && { result_err "Password cannot be empty."; press_any; return; }
-
   if get_passwords | grep -qxF "$new_pass"; then
     result_warn "Password '${W}$new_pass${Y}' already exists."; press_any; return
   fi
-
   echo -ne "  ${DW}Device limit (0 = unlimited)${NC}  ${DIM}▶${NC} "
   read -r dev_limit
   dev_limit=${dev_limit:-0}
@@ -404,11 +322,9 @@ screen_add_user() {
   echo -ne "  ${DW}Validity (days, 0 = unlimited)${NC}  ${DIM}▶${NC} "
   read -r valid_days
   valid_days=${valid_days:-0}
-
   add_password "$new_pass" "$dev_limit" "$data_gb" "$valid_days"
   echo "$new_pass|permanent|unlimited|$(date +%Y-%m-%d)" >> "$DB_FILE"
   reload_svc
-
   local IP=$(server_ip)
   echo ""
   echo -e "  ${G}  ╔═══════════════════════════════════════════════╗${NC}"
@@ -423,18 +339,13 @@ screen_add_user() {
   press_any
 }
 
-# ════════════════════════════════════════════════════════════════
-#  [3]  BULK ADD (with default unlimited limits)
-# ════════════════════════════════════════════════════════════════
 screen_bulk_add() {
   draw_header; draw_dashboard
   section "$G" "📋   BULK ADD PASSWORDS (unlimited limits)"
-
   echo -e "  ${DIM}  Enter passwords separated by commas.${NC}"
   echo -ne "  ${DW}Passwords${NC}  ${DIM}▶${NC} "
   read -r input
   [ -z "$input" ] && { result_err "No input given."; press_any; return; }
-
   IFS=',' read -r -a incoming <<< "$input"
   local added=0 skipped=0
   for np in "${incoming[@]}"; do
@@ -454,23 +365,17 @@ screen_bulk_add() {
   press_any
 }
 
-# ════════════════════════════════════════════════════════════════
-#  [4]  TRIAL USER (1-60 min, with unlimited limits)
-# ════════════════════════════════════════════════════════════════
 screen_trial_user() {
   draw_header; draw_dashboard
   section "$Y" "⏱   CREATE TRIAL USER"
-
   echo -ne "  ${DW}Duration in minutes${NC}  ${DIM}(1–60)${NC}  ${DIM}▶${NC} "
   read -r mins
   if ! [[ "$mins" =~ ^[0-9]+$ ]] || [ "$mins" -lt 1 ] || [ "$mins" -gt 60 ]; then
     result_err "Enter a number between 1 and 60."; press_any; return
   fi
-
   local pass="trial_$(openssl rand -hex 3)"
   add_password "$pass" 0 0 0
   reload_svc
-
   local IP=$(server_ip)
   echo ""
   echo -e "  ${Y}  ╔═══════════════════════════════════════════════╗${NC}"
@@ -482,7 +387,6 @@ screen_trial_user() {
   printf  "  ${Y}  ║${NC}  ${DW}Obfs      :${NC}  ${W}%-31s${Y}  ║${NC}\n" "zivpn"
   echo -e "  ${Y}  ╚═══════════════════════════════════════════════╝${NC}"
   echo -e "\n  ${DIM}  Auto-expiring in $mins minutes...${NC}"
-
   (
     sleep $((mins * 60))
     remove_password "$pass"
@@ -491,16 +395,11 @@ screen_trial_user() {
   press_any
 }
 
-# ════════════════════════════════════════════════════════════════
-#  [5]  REMOVE USER
-# ════════════════════════════════════════════════════════════════
 screen_remove_user() {
   draw_header; draw_dashboard
   section "$R" "🗑   REMOVE A USER"
-
   mapfile -t PWDS < <(get_passwords)
   [ ${#PWDS[@]} -eq 0 ] && { echo -e "  ${DIM}  No users to remove.${NC}"; press_any; return; }
-
   echo -e "  ${DIM}  ┌──────┬────────────────────────────────────────────┐${NC}"
   local i=1
   for p in "${PWDS[@]}"; do
@@ -514,7 +413,6 @@ screen_remove_user() {
   if ! [[ "$sel" =~ ^[0-9]+$ ]] || [ "$sel" -gt "${#PWDS[@]}" ]; then
     result_err "Invalid selection."; press_any; return
   fi
-
   local removed="${PWDS[$((sel-1))]}"
   remove_password "$removed"
   sed -i "/^${removed}|/d" "$DB_FILE" 2>/dev/null
@@ -523,16 +421,11 @@ screen_remove_user() {
   press_any
 }
 
-# ════════════════════════════════════════════════════════════════
-#  [6]  BULK REMOVE
-# ════════════════════════════════════════════════════════════════
 screen_bulk_remove() {
   draw_header; draw_dashboard
   section "$R" "🗑   REMOVE MULTIPLE USERS"
-
   mapfile -t PWDS < <(get_passwords)
   [ ${#PWDS[@]} -eq 0 ] && { echo -e "  ${DIM}  No users to remove.${NC}"; press_any; return; }
-
   echo -e "  ${DIM}  ┌──────┬────────────────────────────────────────────┐${NC}"
   local i=1
   for p in "${PWDS[@]}"; do
@@ -544,7 +437,6 @@ screen_bulk_remove() {
   echo -ne "  ${DIM}▶${NC} "
   read -r sel_input
   { [ "$sel_input" = "0" ] || [ -z "$sel_input" ]; } && return
-
   IFS=',' read -r -a sel_arr <<< "$sel_input"
   local cnt=0
   declare -A to_rm
@@ -552,7 +444,6 @@ screen_bulk_remove() {
     s=$(echo "$s" | xargs)
     [[ "$s" =~ ^[0-9]+$ ]] && [ "$s" -ge 1 ] && [ "$s" -le "${#PWDS[@]}" ] && to_rm[$((s-1))]=1
   done
-
   for idx in "${!to_rm[@]}"; do
     remove_password "${PWDS[$idx]}"
     sed -i "/^${PWDS[$idx]}|/d" "$DB_FILE" 2>/dev/null
@@ -563,9 +454,6 @@ screen_bulk_remove() {
   press_any
 }
 
-# ════════════════════════════════════════════════════════════════
-#  [7]  CLEAR ALL
-# ════════════════════════════════════════════════════════════════
 screen_clear_all() {
   draw_header; draw_dashboard
   section "$R" "⚠   CLEAR ALL USERS"
@@ -581,9 +469,6 @@ screen_clear_all() {
   press_any
 }
 
-# ════════════════════════════════════════════════════════════════
-#  [8]  START
-# ════════════════════════════════════════════════════════════════
 screen_start() {
   draw_header; draw_dashboard
   section "$G" "▶   START ZIVPN"
@@ -605,9 +490,6 @@ screen_start() {
   press_any
 }
 
-# ════════════════════════════════════════════════════════════════
-#  [9]  STOP
-# ════════════════════════════════════════════════════════════════
 screen_stop() {
   draw_header; draw_dashboard
   section "$R" "⏹   STOP ZIVPN"
@@ -621,9 +503,6 @@ screen_stop() {
   press_any
 }
 
-# ════════════════════════════════════════════════════════════════
-#  [10]  RESTART
-# ════════════════════════════════════════════════════════════════
 screen_restart() {
   draw_header; draw_dashboard
   section "$Y" "↺   RESTART ZIVPN"
@@ -640,9 +519,6 @@ screen_restart() {
   press_any
 }
 
-# ════════════════════════════════════════════════════════════════
-#  [U]  AUTO-UPDATE
-# ════════════════════════════════════════════════════════════════
 screen_autoupdate() {
   draw_header; draw_dashboard
   section "$M" "⟳   AUTO-UPDATE FROM GITHUB"
@@ -652,8 +528,6 @@ screen_autoupdate() {
   echo ""
   local ERRS=0
   local TMP=$(mktemp -d)
-
-  # Panel
   echo -ne "  ${C}⟳${NC}  Panel (zivudp.sh)..."
   if wget -q --timeout=20 "$REPO_RAW/panel/zivudp.sh" -O "$TMP/zivudp.sh" && [ -s "$TMP/zivudp.sh" ]; then
     cp "$TMP/zivudp.sh" "$PANEL_PATH" && chmod +x "$PANEL_PATH"
@@ -661,8 +535,6 @@ screen_autoupdate() {
   else
     echo -e "  ${R}✘ failed${NC}"; ((ERRS++))
   fi
-
-  # Web panel Python script
   echo -ne "  ${C}⟳${NC}  Web panel (webpanel.py)..."
   if wget -q --timeout=20 "$REPO_RAW/panel/webpanel.py" -O "$TMP/webpanel.py" && [ -s "$TMP/webpanel.py" ]; then
     cp "$TMP/webpanel.py" "$WEBPANEL_PY"
@@ -670,8 +542,6 @@ screen_autoupdate() {
   else
     echo -e "  ${R}✘ failed${NC}"; ((ERRS++))
   fi
-
-  # ZIVPN binary
   local ARCH=$(uname -m)
   local BIN_ARCH="amd64"
   case $ARCH in aarch64|arm64) BIN_ARCH="arm64";; esac
@@ -688,7 +558,6 @@ screen_autoupdate() {
   else
     echo -e "  ${Y}⚠ skipped${NC}"; ((ERRS++))
   fi
-
   rm -rf "$TMP"
   echo ""
   if [ "$ERRS" -eq 0 ]; then
@@ -700,9 +569,6 @@ screen_autoupdate() {
   exec "$PANEL_PATH"
 }
 
-# ════════════════════════════════════════════════════════════════
-#  [M]  MONITOR (live connections + per-user quota usage)
-# ════════════════════════════════════════════════════════════════
 screen_monitor() {
   draw_header; draw_dashboard
   section "$Y" "📡   LIVE CONNECTION MONITOR"
@@ -718,7 +584,6 @@ screen_monitor() {
     echo "$CONNS" | awk '{printf "  \033[2m  │\033[0m  \033[1;32m%-27s\033[0m  \033[2m│\033[0m  \033[1;37m%-27s\033[0m  \033[2m│\033[0m\n", $5, $6}'
     echo -e "  ${DIM}  └─────────────────────────────┴─────────────────────────────┘${NC}"
   fi
-
   echo -e "\n  ${W}  Per‑user bandwidth usage (GB):${NC}"
   python3 -c "
 import json
@@ -735,7 +600,6 @@ try:
             print(f'  {pw}: unlimited')
 except: pass
 "
-
   echo -e "\n  ${W}  Recent logs (last 20):${NC}\n"
   journalctl -u zivpn -n 20 --no-pager 2>/dev/null | sed 's/^/    /' \
     | sed "s/[Ee][Rr][Rr][Oo][Rr]/${R}&${NC}/g" \
@@ -743,9 +607,6 @@ except: pass
   press_any
 }
 
-# ════════════════════════════════════════════════════════════════
-#  [P]  CHANGE PORT
-# ════════════════════════════════════════════════════════════════
 screen_change_port() {
   draw_header; draw_dashboard
   section "$C" "🔌   CHANGE LISTEN PORT"
@@ -764,9 +625,6 @@ screen_change_port() {
   press_any
 }
 
-# ════════════════════════════════════════════════════════════════
-#  [C]  CONFIG CHECK / REPAIR
-# ════════════════════════════════════════════════════════════════
 screen_config_check() {
   draw_header; draw_dashboard
   section "$C" "🔧   CONFIG CHECK & REPAIR"
@@ -792,7 +650,6 @@ screen_config_check() {
   fi
   [ -f "/etc/zivpn/zivpn.crt" ] && echo -e "  ${G}  ✔ cert file${NC}" || echo -e "  ${R}  ✘ cert file missing${NC}"
   [ -f "/etc/zivpn/zivpn.key" ] && echo -e "  ${G}  ✔ key file${NC}"  || echo -e "  ${R}  ✘ key file missing${NC}"
-
   if [ "$ok" -eq 0 ]; then
     echo ""
     if confirm_yn "Config has errors. Auto-repair now?"; then
@@ -820,9 +677,6 @@ CONF
   press_any
 }
 
-# ════════════════════════════════════════════════════════════════
-#  [I]  ABOUT
-# ════════════════════════════════════════════════════════════════
 screen_about() {
   draw_header
   echo ""
@@ -842,9 +696,7 @@ screen_about() {
   press_any
 }
 
-# ════════════════════════════════════════════════════════════════
-#  [W]  WEB PANEL (install / manage)
-# ════════════════════════════════════════════════════════════════
+# ========== WEB PANEL INSTALLATION (with updated zivmon) ==========
 webpanel_running() { systemctl is-active --quiet zivpanel 2>/dev/null; }
 webpanel_get_port() {
   python3 -c "import json; d=json.load(open('$WEBPANEL_CONF')); print(d.get('port',8080))" 2>/dev/null || echo 8080
@@ -879,7 +731,6 @@ install_webpanel() {
   read -r wp_pass
   wp_pass=${wp_pass:-admin}
 
-  # Download webpanel.py
   wget -q --timeout=20 "$REPO_RAW/panel/webpanel.py" -O "$WEBPANEL_PY"
   if [ ! -s "$WEBPANEL_PY" ]; then
     result_err "Download failed"
@@ -887,16 +738,14 @@ install_webpanel() {
     return
   fi
 
-  # Write config with hashed password
   python3 -c "
 import json, hashlib
 c={'port':$wp_port,'pass_hash':hashlib.sha256('$wp_pass'.encode()).hexdigest()}
 json.dump(c,open('$WEBPANEL_CONF','w'),indent=2)
 "
-  # Ensure metadata file exists
   [ -f "$META_FILE" ] || echo '{}' > "$META_FILE"
 
-  # Install monitor service (zivmon) – updates bandwidth usage & enforces expiry
+  # ========== UPDATED zivmon ==========
   cat > /usr/local/bin/zivmon << 'MONSCRIPT'
 #!/usr/bin/python3
 import json, subprocess, time, re, os
@@ -923,13 +772,26 @@ def get_port():
 def get_active_ips_for_user(pw):
     ips = set()
     try:
-        out = subprocess.run(["journalctl", "-u", "zivpn", "-n", "500", "--no-pager"],
+        out = subprocess.run(["journalctl", "-u", "zivpn", "--since", "1 minute ago", "--no-pager"],
                              capture_output=True, text=True, timeout=2).stdout
+        patterns = [
+            re.compile(r'(?:password|user)[:=](\S+).*from (\d+\.\d+\.\d+\.\d+)', re.IGNORECASE),
+            re.compile(r'auth(?: ok)? for (\S+) from (\d+\.\d+\.\d+\.\d+)', re.IGNORECASE),
+            re.compile(r'authenticated (\S+) from (\d+\.\d+\.\d+\.\d+)', re.IGNORECASE),
+        ]
         for line in out.splitlines():
-            if "authenticated" in line and f"password={pw}" in line:
-                m = re.search(r"from (\d+\.\d+\.\d+\.\d+)", line)
+            for pat in patterns:
+                m = pat.search(line)
                 if m:
-                    ips.add(m.group(1))
+                    groups = m.groups()
+                    if len(groups) == 2:
+                        if re.match(r'^\d+\.\d+\.\d+\.\d+$', groups[0]):
+                            ip, pw2 = groups[0], groups[1]
+                        else:
+                            pw2, ip = groups[0], groups[1]
+                        if pw2 == pw:
+                            ips.add(ip)
+                    break
     except: pass
     return ips
 
@@ -941,7 +803,17 @@ def update_iptables_quota(pw, limit_bytes):
     subprocess.run(["iptables", "-A", chain, "-j", "DROP"], stderr=subprocess.DEVNULL)
     port = get_port()
     for ip in get_active_ips_for_user(pw):
-        subprocess.run(["iptables", "-I", "INPUT", "-s", ip, "-p", "udp", "--dport", port, "-j", chain], stderr=subprocess.DEVNULL)
+        for dir in ["INPUT", "OUTPUT"]:
+            if dir == "INPUT":
+                subprocess.run(["iptables", "-I", dir, "-s", ip, "-p", "udp", "--dport", port, "-j", chain], stderr=subprocess.DEVNULL)
+            else:
+                subprocess.run(["iptables", "-I", dir, "-d", ip, "-p", "udp", "--sport", port, "-j", chain], stderr=subprocess.DEVNULL)
+
+def block_user_ips(pw):
+    ips = get_active_ips_for_user(pw)
+    for ip in ips:
+        for dir in ["INPUT", "OUTPUT"]:
+            subprocess.run(["iptables", "-I", dir, "-s" if dir=="INPUT" else "-d", ip, "-p", "udp", "-j", "DROP"], stderr=subprocess.DEVNULL)
 
 def update_bandwidth_usage():
     meta = load_meta()
@@ -964,7 +836,7 @@ def update_bandwidth_usage():
                                 save_meta(meta)
                             break
         except: pass
-        # Also ensure chain is attached to current IPs
+        # Ensure chain is attached to current IPs
         update_iptables_quota(pw, limit)
 
 def enforce_expiry():
@@ -974,7 +846,7 @@ def enforce_expiry():
     for pw, data in list(meta.items()):
         expiry = data.get("expiry")
         if expiry and expiry < now:
-            # Remove from config.json
+            block_user_ips(pw)          # immediate block
             subprocess.run(["zivudp", "remove", pw], capture_output=True)
             subprocess.run(["iptables", "-F", f"ZIV_USER_{pw}"], stderr=subprocess.DEVNULL)
             subprocess.run(["iptables", "-X", f"ZIV_USER_{pw}"], stderr=subprocess.DEVNULL)
@@ -987,7 +859,7 @@ def enforce_expiry():
 while True:
     enforce_expiry()
     update_bandwidth_usage()
-    time.sleep(60)
+    time.sleep(10)   # check every 10 seconds
 MONSCRIPT
   chmod +x /usr/local/bin/zivmon
 
@@ -1011,7 +883,6 @@ UNIT
   systemctl enable zivpanel zivmon
   systemctl restart zivpanel zivmon
 
-  # Verify services are running
   sleep 2
   if systemctl is-active --quiet zivmon; then
     echo -e "  ${G}✔ zivmon is running${NC}"
@@ -1118,42 +989,21 @@ screen_webpanel() {
   done
 }
 
-# ════════════════════════════════════════════════════════════════
-#  MAIN MENU
-# ════════════════════════════════════════════════════════════════
+# ========== MAIN MENU ==========
 main_menu() {
   ensure_config
-
-  # ─────────────────────────────────────────────────────────────────────
-  #  Box geometry  →  inner width = 56 terminal columns
-  #  Item layout:  ║  [key : 4 chars]  [desc : %-48s]  ║
-  #                    2       4        2       48     = 56
-  # ─────────────────────────────────────────────────────────────────────
-
-  local BC='\033[1;36m'   # bold-cyan — used only for section headings
-
-  # _mi  COLOR  KEY  DESCRIPTION
-  # Renders one menu-item row with pixel-perfect column alignment.
+  local BC='\033[1;36m'
   _mi() {
     local c="$1" k="$2" d="$3" kp
-    [[ ${#k} -eq 1 ]] && kp="[${k}] " || kp="[${k}]"   # pad key to 4 chars
+    [[ ${#k} -eq 1 ]] && kp="[${k}] " || kp="[${k}]"
     printf "  ${DIM}║${NC}  ${c}%s${NC}  %-48s${DIM}║${NC}\n" "$kp" "$d"
   }
-
-  # _ms  ICON_TERMINAL_COLS  ICON  TITLE
-  # Renders one section-header row; pad is computed so the right ║ always lands
-  # at column 60 regardless of title length.
   _ms() {
     local iw="$1" icon="$2" title="$3"
     local pad=$(( 56 - 2 - iw - 2 - ${#title} ))
     printf "  ${DIM}║${NC}  ${BC}%s  %s${NC}%*s${DIM}║${NC}\n" \
       "$icon" "$title" "$pad" ""
   }
-
-  # Pre-built frame strings  (IW = 56; 2-space left indent)
-  # TOP / BOT : ╔╗/╚╝ + 56 × ═
-  # EMP       : ║ + 56 spaces  + ║      (breathing room between sections)
-  # LIN       : ║ + 2sp + 52 × ─ + 2sp + ║   (sub-header divider)
   local TOP BOT EMP LIN
   TOP="  ${DIM}╔════════════════════════════════════════════════════════╗${NC}"
   BOT="  ${DIM}╚════════════════════════════════════════════════════════╝${NC}"
@@ -1166,8 +1016,6 @@ main_menu() {
 
     echo -e "$TOP"
     echo -e "$EMP"
-
-    # ── USER MANAGEMENT ──────────────────────────────────────────────
     _ms 2 "👥" "USER MANAGEMENT"
     echo -e "$LIN"
     _mi "$G"   1  "List All Users + Limits"
@@ -1178,8 +1026,6 @@ main_menu() {
     _mi "$R"   6  "Remove Multiple Users"
     _mi "$R"   7  "Clear ALL Users"
     echo -e "$EMP"
-
-    # ── SERVICE CONTROL ───────────────────────────────────────────────
     _ms 2 "🔧" "SERVICE CONTROL"
     echo -e "$LIN"
     _mi "$G"   8  "Start ZIVPN"
@@ -1187,14 +1033,10 @@ main_menu() {
     _mi "$Y"  10  "Restart ZIVPN"
     _mi "$M"   u  "Auto-Update from GitHub"
     echo -e "$EMP"
-
-    # ── WEB PANEL ─────────────────────────────────────────────────────
     _ms 2 "🌐" "WEB PANEL"
     echo -e "$LIN"
     _mi "$M"   w  "Web Panel  (install / manage)"
     echo -e "$EMP"
-
-    # ── TOOLS ─────────────────────────────────────────────────────────
     _ms 2 "🛠" "TOOLS"
     echo -e "$LIN"
     _mi "$C"   m  "Live Monitor + Bandwidth Usage"
@@ -1202,8 +1044,6 @@ main_menu() {
     _mi "$Y"   c  "Config Check & Repair"
     _mi "$W"   i  "About / Info"
     echo -e "$EMP"
-
-    # ── EXIT ──────────────────────────────────────────────────────────
     _mi "$DR"  q  "Exit"
     echo -e "$EMP"
     echo -e "$BOT"
