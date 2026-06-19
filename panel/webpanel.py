@@ -4,7 +4,7 @@ NOOBS ZIVPN UDP Web Panel — Professional UI, Mobile Ready & Optimized
 Zero external dependencies — pure Python3 stdlib only
 """
 
-import json, os, sys, subprocess, hashlib, secrets, time, socket, re, threading, urllib.request
+import json, os, sys, subprocess, hashlib, secrets, time, socket, re, threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from threading import Lock
@@ -19,8 +19,10 @@ SESS_TTL    = 3600
 SESSION_LOCK = Lock()
 STATUS_CACHE = {"data": None, "ts": 0.0}
 LOGS_CACHE   = {"data": None, "ts": 0.0}
-STATUS_CACHE_TTL = 2.0
-LOGS_CACHE_TTL   = 3.0
+USERS_CACHE  = {"data": None, "ts": 0.0}
+STATUS_CACHE_TTL = 5.0      # increased
+LOGS_CACHE_TTL   = 10.0     # increased
+USERS_CACHE_TTL  = 10.0     # new
 
 _ip_cache = {"ip": None, "ts": 0}
 _device_cache = {"ts": 0, "data": {}}
@@ -30,13 +32,13 @@ def get_connected_devices(force_refresh=False):
     """Return dict: password -> list of source IPs currently connected."""
     global _device_cache
     now = time.time()
-    if not force_refresh and (now - _device_cache["ts"]) < 5:
+    if not force_refresh and (now - _device_cache["ts"]) < 10:   # increased TTL
         return _device_cache["data"]
 
     ip_to_pw = {}
+    # Use recent logs only
     try:
-        # Try journalctl first
-        cmd = ["journalctl", "-u", "zivpn", "-n", "2000", "--no-pager"]
+        cmd = ["journalctl", "-u", "zivpn", "--since", "1 minute ago", "--no-pager"]
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=3).stdout
     except:
         out = ""
@@ -48,9 +50,9 @@ def get_connected_devices(force_refresh=False):
             out = ""
 
     patterns = [
-        re.compile(r'(?:authenticated|auth).*password[:=](\S+).*from (\d+\.\d+\.\d+\.\d+)', re.IGNORECASE),
-        re.compile(r'password[:=](\S+).*from (\d+\.\d+\.\d+\.\d+)', re.IGNORECASE),
-        re.compile(r'auth.*for (\S+) from (\d+\.\d+\.\d+\.\d+)', re.IGNORECASE),
+        re.compile(r'(?:password|user)[:=](\S+).*from (\d+\.\d+\.\d+\.\d+)', re.IGNORECASE),
+        re.compile(r'auth(?: ok)? for (\S+) from (\d+\.\d+\.\d+\.\d+)', re.IGNORECASE),
+        re.compile(r'authenticated (\S+) from (\d+\.\d+\.\d+\.\d+)', re.IGNORECASE),
     ]
     for line in out.splitlines():
         for pat in patterns:
@@ -104,26 +106,24 @@ def setup_iptables_quota(pw, limit_gb):
     """Create the quota chain with quota and DROP rules."""
     chain = f"ZIV_USER_{pw}"
     limit_bytes = int(limit_gb * 1024**3)
-    # Delete existing chain if any
     subprocess.run(["iptables", "-F", chain], stderr=subprocess.DEVNULL)
     subprocess.run(["iptables", "-X", chain], stderr=subprocess.DEVNULL)
-    # Create new chain
     subprocess.run(["iptables", "-N", chain], stderr=subprocess.DEVNULL)
     subprocess.run(["iptables", "-A", chain, "-m", "quota", "--quota", str(limit_bytes), "-j", "RETURN"], stderr=subprocess.DEVNULL)
     subprocess.run(["iptables", "-A", chain, "-j", "DROP"], stderr=subprocess.DEVNULL)
 
 def delete_iptables_chain(pw):
     chain = f"ZIV_USER_{pw}"
-    # Remove all INPUT rules jumping to this chain
-    try:
-        out = subprocess.run(["iptables", "-L", "INPUT", "--line-numbers", "-n"], capture_output=True, text=True, timeout=2).stdout
-        for line in reversed(out.splitlines()):
-            if chain in line:
-                num = line.split()[0]
-                if num.isdigit():
-                    subprocess.run(["iptables", "-D", "INPUT", num], stderr=subprocess.DEVNULL)
-    except:
-        pass
+    for chain_dir in ["INPUT", "OUTPUT"]:
+        try:
+            out = subprocess.run(["iptables", "-L", chain_dir, "--line-numbers", "-n"], capture_output=True, text=True, timeout=2).stdout
+            for line in reversed(out.splitlines()):
+                if chain in line:
+                    num = line.split()[0]
+                    if num.isdigit():
+                        subprocess.run(["iptables", "-D", chain_dir, num], stderr=subprocess.DEVNULL)
+        except:
+            pass
     subprocess.run(["iptables", "-F", chain], stderr=subprocess.DEVNULL)
     subprocess.run(["iptables", "-X", chain], stderr=subprocess.DEVNULL)
 
@@ -144,44 +144,51 @@ def get_iptables_quota_left(pw):
 
 def ensure_iptables_quota_for_user(pw):
     """
-    Ensure the quota chain exists and is attached to INPUT for all active IPs of this user.
-    Attach to ALL UDP traffic (any port) from those IPs.
+    Ensure the quota chain exists and is attached to INPUT and OUTPUT
+    for all active IPs of this user.
     """
     meta = load_meta()
     data = meta.get(pw, {})
     data_limit = data.get("data_limit_bytes", 0)
     if data_limit == 0:
-        return  # no quota needed
+        return
 
     chain = f"ZIV_USER_{pw}"
     if not chain_exists(chain):
-        # Recreate the chain with the correct limit
         setup_iptables_quota(pw, data_limit / 1024**3)
-    else:
-        # Ensure the quota rule has the correct limit (in case it was changed)
-        # For simplicity, we could just recreate, but that would reset the counter.
-        # We'll keep it as is, but if the limit changed, we need to adjust.
-        # That's a corner case; we'll assume limits don't change after creation.
-        pass
 
-    # Get active IPs for this user (force refresh)
     devices = get_connected_devices(force_refresh=True)
     ips = devices.get(pw, [])
 
-    # Remove any existing INPUT rules that jump to this chain (to avoid duplicates)
-    try:
-        out = subprocess.run(["iptables", "-L", "INPUT", "--line-numbers", "-n"], capture_output=True, text=True, timeout=2).stdout
-        for line in reversed(out.splitlines()):
-            if chain in line:
-                num = line.split()[0]
-                if num.isdigit():
-                    subprocess.run(["iptables", "-D", "INPUT", num], stderr=subprocess.DEVNULL)
-    except:
-        pass
+    # Remove any existing INPUT/OUTPUT rules for this chain
+    for chain_dir in ["INPUT", "OUTPUT"]:
+        try:
+            out = subprocess.run(["iptables", "-L", chain_dir, "--line-numbers", "-n"],
+                                 capture_output=True, text=True, timeout=2).stdout
+            for line in reversed(out.splitlines()):
+                if chain in line:
+                    num = line.split()[0]
+                    if num.isdigit():
+                        subprocess.run(["iptables", "-D", chain_dir, num], stderr=subprocess.DEVNULL)
+        except:
+            pass
 
-    # Add new rule for each IP: allow all UDP from this IP to pass through the chain
+    # Add rules for each IP: one for INPUT, one for OUTPUT
     for ip in ips:
-        subprocess.run(["iptables", "-I", "INPUT", "-s", ip, "-p", "udp", "-j", chain], stderr=subprocess.DEVNULL)
+        for chain_dir in ["INPUT", "OUTPUT"]:
+            # -s for INPUT, -d for OUTPUT
+            if chain_dir == "INPUT":
+                subprocess.run(["iptables", "-I", chain_dir, "-s", ip, "-p", "udp", "-j", chain], stderr=subprocess.DEVNULL)
+            else:
+                subprocess.run(["iptables", "-I", chain_dir, "-d", ip, "-p", "udp", "-j", chain], stderr=subprocess.DEVNULL)
+
+def block_user_ips(pw):
+    """Add immediate DROP rules for all current IPs of this user."""
+    devices = get_connected_devices(force_refresh=True)
+    ips = devices.get(pw, [])
+    for ip in ips:
+        subprocess.run(["iptables", "-I", "INPUT", "-s", ip, "-p", "udp", "-j", "DROP"], stderr=subprocess.DEVNULL)
+        subprocess.run(["iptables", "-I", "OUTPUT", "-d", ip, "-p", "udp", "-j", "DROP"], stderr=subprocess.DEVNULL)
 
 def periodic_chain_attacher():
     """Background thread to periodically re-attach chains for all limited users."""
@@ -227,7 +234,6 @@ def init_meta_for_user(pw, device_limit=0, data_limit_gb=0, validity_days=0):
 
 def get_user_status(pw):
     """Return device count, remaining GB, and expiry days."""
-    # Ensure quota is attached for active IPs
     ensure_iptables_quota_for_user(pw)
 
     meta = load_meta()
@@ -239,7 +245,6 @@ def get_user_status(pw):
     if expiry_ts:
         remaining_days = max(0, int((expiry_ts - time.time()) / 86400))
 
-    # Calculate used bytes from iptables if possible
     used_bytes = data.get("data_used_bytes", 0)
     if data_limit > 0:
         quota_left = get_iptables_quota_left(pw)
@@ -269,23 +274,19 @@ def get_user_status(pw):
     }
 
 def get_future_timestamp(days):
-    try:
-        url = "https://timeapi.io/api/Time/current/zone?timeZone=UTC"
-        with urllib.request.urlopen(url, timeout=3) as resp:
-            data = json.loads(resp.read().decode())
-            now_epoch = data.get("epochTime", time.time())
-        return now_epoch + days * 86400
-    except:
-        return time.time() + days * 86400
+    # Local time only – no external API
+    return time.time() + days * 86400
 
 def enforce_expiry():
     changed = False
     meta = load_meta()
+    now = time.time()
     for pw, data in list(meta.items()):
-        if data.get("expiry") and data["expiry"] < time.time():
-            remove_user(pw)
+        if data.get("expiry") and data["expiry"] < now:
+            # Block immediately before removal
+            block_user_ips(pw)
             delete_iptables_chain(pw)
-            del meta[pw]
+            remove_user(pw)   # also removes from meta and config
             changed = True
     if changed:
         save_meta(meta)
@@ -443,6 +444,20 @@ def get_logs_cached(n=30):
     LOGS_CACHE["ts"] = now
     return data
 
+def get_users_cached():
+    now = time.time()
+    cached = USERS_CACHE["data"]
+    if cached and (now - USERS_CACHE["ts"]) < USERS_CACHE_TTL:
+        return cached
+    users = get_users()
+    enriched = []
+    for u in users:
+        status = get_user_status(u)
+        enriched.append({"password": u, **status})
+    USERS_CACHE["data"] = enriched
+    USERS_CACHE["ts"] = now
+    return enriched
+
 def new_session():
     tok = secrets.token_hex(32)
     sessions[tok] = time.time() + SESS_TTL
@@ -463,7 +478,7 @@ def get_token(handler):
             return p[9:]
     return None
 
-# ========== HTML (unchanged from previous mobile-ready version) ==========
+# ========== HTML (updated with slower refresh) ==========
 HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1170,11 +1185,11 @@ function escapeHtml(str) {
   });
 }
 
-// Auto-refresh
+// Auto-refresh – now 30 seconds (was 15)
 setInterval(() => {
   if (currentPage === 'dashboard') loadDashboard();
   if (currentPage === 'users') loadUsers();
-}, 15000);
+}, 30000);
 
 // Check if already logged in
 (async () => {
@@ -1229,12 +1244,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/status":
             self.send_json(get_status_snapshot())
         elif path == "/api/users":
-            users = get_users()
-            enriched = []
-            for u in users:
-                status = get_user_status(u)
-                enriched.append({"password": u, **status})
-            self.send_json({"users": enriched})
+            self.send_json({"users": get_users_cached()})
         elif path == "/api/logs":
             self.send_json({"logs": get_logs_cached(30)})
         elif path.startswith("/api/user/status/"):
@@ -1316,12 +1326,11 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 def start_background_expiry_checker():
     def check():
         while True:
-            time.sleep(3600)
+            time.sleep(10)   # check every 10 seconds
             enforce_expiry()
     threading.Thread(target=check, daemon=True).start()
 
 def start_background_chain_attacher():
-    """Start a background thread to periodically re-attach chains."""
     threading.Thread(target=periodic_chain_attacher, daemon=True).start()
 
 if __name__ == "__main__":
