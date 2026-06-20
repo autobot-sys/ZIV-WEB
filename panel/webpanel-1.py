@@ -2,37 +2,6 @@
 """
 NOOBS ZIVPN UDP Web Panel — Professional UI, Mobile Ready & Optimized
 Zero external dependencies — pure Python3 stdlib only
-
-Architecture notes (read this before touching enforcement logic):
-
-- A single background thread (monitor_loop -> monitor_tick) is the ONLY
-  place that talks to conntrack/iptables/journalctl for enforcement
-  purposes. It runs every MONITOR_INTERVAL seconds and publishes a
-  snapshot (_status_cache / _device_ip_cache) that the HTTP handler
-  reads. The HTTP handler never shells out to iptables/conntrack itself,
-  which is what makes the dashboard and user list load instantly even
-  with many users -- the old code re-ran iptables/journalctl/ss on every
-  single page load, once per user, which is why it felt slow.
-- Device detection uses the kernel conntrack table instead of `ss`,
-  because plain UDP server sockets are connectionless: `ss` only shows
-  the listening socket itself, not the individual peers talking to it,
-  unless the server explicitly creates a connected socket per client.
-  conntrack tracks every UDP flow regardless, including across a
-  DNAT'd/port-hopped public range, because we match on the real internal
-  port from either the original or reply tuple.
-- Password<->IP attribution still has to come from logs (there is no
-  other source), but instead of guessing zivpn's exact log phrasing we
-  match any of our *known* passwords verbatim plus an IPv4 address on the
-  same line, which is robust to whatever wording the binary actually
-  uses.
-- Expiry/device-limit/data-limit are enforced by the same loop every few
-  seconds (not once an hour), and over-limit/expired IPs are dropped
-  immediately via a dedicated ZIV_BLOCKED chain hooked at the very top of
-  INPUT, so blocking does not require waiting for a service restart.
-- No external time API and no reliance on the server's local time
-  *formatting*: time.time() is always UTC seconds-since-epoch regardless
-  of the box's configured timezone, so all expiry math is done with that
-  alone.
 """
 
 import json, sys, subprocess, hashlib, secrets, time, socket, re, threading
