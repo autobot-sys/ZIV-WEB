@@ -119,8 +119,8 @@ add_password() {
   # Add to config.json
   jq --arg p "$pass" '.auth.config += [$p]' "$CONFIG_FILE" > /tmp/zv_tmp.json && mv /tmp/zv_tmp.json "$CONFIG_FILE"
   
-  # Add to metadata using Python script file (avoids quoting issues)
-  cat > /tmp/zv_meta.py << PYEOF
+  # Create Python script to handle metadata
+  cat > /tmp/zv_add_meta.py << PYEOF
 import json, time, os, sys
 
 META_FILE = "$META_FILE"
@@ -134,45 +134,53 @@ meta = {}
 if os.path.exists(META_FILE):
     try:
         with open(META_FILE) as f:
-            meta = json.load(f)
-    except:
+            content = f.read().strip()
+            if content:
+                meta = json.loads(content)
+    except Exception as e:
+        print(f"ERROR loading metadata: {e}", file=sys.stderr)
         meta = {}
 
-# Add user if not exists
-if pass_word not in meta:
-    expiry = None
-    if valid_days > 0:
-        expiry = time.time() + valid_days * 86400
-    
-    meta[pass_word] = {
-        "device_limit": dev_limit,
-        "data_limit_bytes": int(data_gb * 1024**3) if data_gb > 0 else 0,
-        "data_used_bytes": 0,
-        "expiry": expiry,
-        "created_at": time.time()
-    }
-    
-    with open(META_FILE, "w") as f:
-        json.dump(meta, f, indent=2)
-    
-    print("OK")
-    sys.exit(0)
-else:
+# Check if user exists
+if pass_word in meta:
     print("EXISTS")
     sys.exit(1)
+
+# Create user entry
+expiry = None
+if valid_days > 0:
+    expiry = time.time() + valid_days * 86400
+
+meta[pass_word] = {
+    "device_limit": dev_limit,
+    "data_limit_bytes": int(data_gb * 1024**3) if data_gb > 0 else 0,
+    "data_used_bytes": 0,
+    "expiry": expiry,
+    "created_at": time.time()
+}
+
+# Save metadata
+with open(META_FILE, "w") as f:
+    json.dump(meta, f, indent=2)
+
+print("OK")
+sys.exit(0)
 PYEOF
 
-  python3 /tmp/zv_meta.py
-  local result=$?
-  rm -f /tmp/zv_meta.py
+  # Run the Python script
+  local result=$(python3 /tmp/zv_add_meta.py 2>&1)
+  local exit_code=$?
+  rm -f /tmp/zv_add_meta.py
+  
+  echo -e "  ${DIM}Result: $result${NC}"
   
   # Setup iptables quota if data limit > 0
-  if [ "$data_gb" -gt 0 ] && [ "$result" -eq 0 ]; then
+  if [ "$data_gb" -gt 0 ] && [ $exit_code -eq 0 ]; then
     setup_iptables_quota "$pass" "$data_gb"
   fi
   
   restart_acct_daemon
-  return $result
+  return $exit_code
 }
 
 remove_password() {
