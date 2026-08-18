@@ -101,7 +101,6 @@ add_password() {
   ensure_config
   jq --arg p "$pass" '.auth.config += [$p]' "$CONFIG_FILE" > /tmp/zv_tmp.json && mv /tmp/zv_tmp.json "$CONFIG_FILE"
 
-  # Metadata now contains only expiry and creation time.
   python3 -c "
 import json, time
 META='$META_FILE'
@@ -131,22 +130,47 @@ if __import__('os').path.exists(META):
     meta.pop('$pass', None)
     json.dump(meta, open(META, 'w'), indent=2)
 "
-  # Clean any legacy iptables chains (from older versions that had data limits)
+  # Clean any legacy iptables chains
   delete_iptables_chain "$pass"
 }
 
-# Clear all users
-clear_passwords() {
+# Clear only expired users
+clear_expired_passwords() {
   ensure_config
-  jq '.auth.config = []' "$CONFIG_FILE" > /tmp/zv_tmp.json && mv /tmp/zv_tmp.json "$CONFIG_FILE"
-  echo '{}' > "$META_FILE"
-  # Remove any legacy per-user chains
-  for chain in $(iptables -S 2>/dev/null | awk '/^-N ZIV_USER_/{print $2}'); do
-    delete_iptables_chain "${chain#ZIV_USER_}"
-  done
+  local now=$(date +%s)
+  local expired_list=()
+  # Find expired users via Python for reliable timestamp comparison
+  expired_list=$(python3 -c "
+import json, time
+META='$META_FILE'
+try:
+    meta = json.load(open(META))
+except:
+    meta = {}
+now = time.time()
+expired = []
+for pw, data in meta.items():
+    exp = data.get('expiry')
+    if exp is not None and exp <= now:
+        expired.append(pw)
+print('\n'.join(expired))
+")
+  if [ -z "$expired_list" ]; then
+    echo "0"
+    return
+  fi
+  local count=0
+  while IFS= read -r pw; do
+    [ -z "$pw" ] && continue
+    remove_password "$pw"
+    sed -i "/^${pw}|/d" "$DB_FILE" 2>/dev/null
+    ((count++))
+  done <<< "$expired_list"
+  [ $count -gt 0 ] && reload_svc
+  echo "$count"
 }
 
-# Legacy cleanup function (kept only to remove old chains from previous versions)
+# Legacy cleanup function (kept for old chains)
 delete_iptables_chain() {
   local pass="$1"
   local chain="ZIV_USER_$pass"
@@ -513,17 +537,19 @@ screen_bulk_remove() {
 }
 
 # ════════════════════════════════════════════════════════════════
-#  [7]  CLEAR ALL
+#  [7]  CLEAR EXPIRED USERS
 # ════════════════════════════════════════════════════════════════
-screen_clear_all() {
+screen_clear_expired() {
   draw_header; draw_dashboard
-  section "$R" "⚠   CLEAR ALL USERS"
-  echo -e "  ${R}  This removes EVERY user. All clients disconnect.${NC}\n"
-  if confirm_yn "Confirm clear all users?"; then
-    clear_passwords
-    > "$DB_FILE"
-    reload_svc
-    result_ok "All users cleared."
+  section "$R" "⚠   CLEAR EXPIRED USERS"
+  echo -e "  ${Y}  This removes only users whose validity has expired.${NC}\n"
+  if confirm_yn "Confirm clear expired users?"; then
+    local removed=$(clear_expired_passwords)
+    if [ "$removed" -gt 0 ]; then
+      result_ok "$removed expired user(s) cleared."
+    else
+      result_warn "No expired users found."
+    fi
   else
     result_warn "Cancelled."
   fi
@@ -716,9 +742,9 @@ screen_change_port() {
   press_any
 }
 
-# ════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════
 #  [C]  CONFIG CHECK / REPAIR
-# ════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════
 screen_config_check() {
   draw_header; draw_dashboard
   section "$C" "🔧   CONFIG CHECK & REPAIR"
@@ -772,9 +798,9 @@ CONF
   press_any
 }
 
-# ════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════
 #  [I]  ABOUT
-# ════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════
 screen_about() {
   draw_header
   echo ""
@@ -794,9 +820,9 @@ screen_about() {
   press_any
 }
 
-# ════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════
 #  [W]  WEB PANEL (install / manage)
-# ════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════
 webpanel_running() { systemctl is-active --quiet zivpanel 2>/dev/null; }
 webpanel_get_port() {
   python3 -c "import json; d=json.load(open('$WEBPANEL_CONF')); print(d.get('port',8080))" 2>/dev/null || echo 8080
@@ -964,9 +990,9 @@ screen_webpanel() {
   done
 }
 
-# ════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════
 #  MAIN MENU
-# ════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════
 main_menu() {
   ensure_config
 
@@ -1006,7 +1032,7 @@ main_menu() {
     _mi "$Y"   4  "Trial User  (auto-expires)"
     _mi "$R"   5  "Remove Single User"
     _mi "$R"   6  "Remove Multiple Users"
-    _mi "$R"   7  "Clear ALL Users"
+    _mi "$R"   7  "Clear Expired Users"
     echo -e "$EMP"
 
     _ms 2 "🔧" "SERVICE CONTROL"
@@ -1045,7 +1071,7 @@ main_menu() {
       4)       screen_trial_user   ;;
       5)       screen_remove_user  ;;
       6)       screen_bulk_remove  ;;
-      7)       screen_clear_all    ;;
+      7)       screen_clear_expired ;;
       8)       screen_start        ;;
       9)       screen_stop         ;;
       10)      screen_restart      ;;
