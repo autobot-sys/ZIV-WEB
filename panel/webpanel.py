@@ -1015,11 +1015,11 @@ HTML = r"""<!DOCTYPE html>
           <div class="form-row">
             <div class="form-group"><label>Password</label><input type="text" id="newPassword" class="form-control" placeholder="user123"></div>
             <div class="form-group"><label>Validity (days, 0 = unlimited)</label><input type="number" id="validityDays" class="form-control" value="0"></div>
-            <div class="form-group"><label> </label><button class="btn btn-success" onclick="addUser()">Add User</button></div>
+            <div class="form-group"><label> </label><button class="btn btn-success" onclick="addUser()">Add User</button></div>
           </div>
           <div class="form-row">
             <div class="form-group"><label>Bulk add (comma separated)</label><input type="text" id="bulkPasswords" class="form-control" placeholder="pass1,pass2,pass3"></div>
-            <div class="form-group"><label> </label><button class="btn btn-primary" onclick="bulkAdd()">Bulk Add</button></div>
+            <div class="form-group"><label> </label><button class="btn btn-primary" onclick="bulkAdd()">Bulk Add</button></div>
           </div>
         </div>
       </div>
